@@ -23,8 +23,6 @@ SCHEMA_VERSION = 3
 
 PIN_ITERATIONS = 200_000
 MAX_JOURNAL_ENTRIES = 1000
-MAX_WEIGHT_SAMPLES = 2000
-MAX_WORKOUTS = 200
 
 COUNTER_ICONS = [
     "prohibit",
@@ -82,9 +80,9 @@ def default_user_settings() -> dict[str, Any]:
         "reminder": {"on": False, "time": "08:00"},
         "telegram_chat_id": "",
         "hevy_key": "",
-        # Entity IDs are per member: a Mi scale creates a separate set of
-        # sensors for each person it recognises.
-        "entities": {key: "" for key in METRIC_KEYS} | {"steps": ""},
+        # Prefer one legacy BodyMiScale composite entity per person; separate
+        # metric sensors remain supported for newer integrations and fallbacks.
+        "entities": {"bodymiscale": ""} | {key: "" for key in METRIC_KEYS} | {"steps": ""},
     }
 
 
@@ -489,7 +487,7 @@ class Store:
             samples = [s for s in user["weight_samples"] if s.get("date") != day]
             samples.append(clean)
             samples.sort(key=lambda s: s["date"])
-            user["weight_samples"] = samples[-MAX_WEIGHT_SAMPLES:]
+            user["weight_samples"] = samples
             self._commit()
             return True
 
@@ -498,7 +496,7 @@ class Store:
             user = self._user_ref(user_id)
             if user is None:
                 return False
-            user["workouts"] = workouts[:MAX_WORKOUTS]
+            user["workouts"] = workouts
             user["gym_synced_at"] = now_iso()
             self._commit()
             return True

@@ -62,7 +62,12 @@ per-member.
 
 ### Home Assistant — Mi Body Composition Scale
 
-Settings → **Home Assistant entities**. Map one entity per metric:
+Settings → **Home Assistant entities**. Prefer the single composite entity
+created by legacy BodyMiScale versions, for example `bodymiscale.your_name`.
+Momentum reads all metrics and all Recorder history from its attributes.
+
+If your BodyMiScale version exposes separate sensors instead, map one entity
+per metric:
 
 | Metric       | Typical entity                       |
 | ------------ | ------------------------------------ |
@@ -78,8 +83,8 @@ A Mi scale creates a **separate set of entities per recognised person**, so
 each household member maps their own. Only weight is required; the rest
 enrich the Body composition screen.
 
-Saving also imports history from the Home Assistant recorder, so your chart
-is populated immediately. After that the add-on polls every 10 minutes and
+Saving also imports all history retained by the Home Assistant recorder, so
+your chart is populated immediately. After that the add-on polls every 10 minutes and
 keeps its own copy — which means your history survives the recorder's purge
 window.
 

@@ -41,7 +41,7 @@ MAX_BODY_BYTES = 512 * 1024
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
@@ -339,7 +339,7 @@ class Api:
             ],
             "journal": user["journal"][:60],
             "weight_samples": samples[-120:],
-            "workouts": user["workouts"][:40],
+            "workouts": user["workouts"],
             "gym_synced_at": user["gym_synced_at"],
             "steps": (user.get("steps") or {}).get(today, 0),
             "metrics": METRICS,

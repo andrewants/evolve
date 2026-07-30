@@ -1150,11 +1150,11 @@ function screenSettings() {
         icon("house-line", { cls: `icon${d.integrations.ha_available ? "" : " off"}` }),
         el("div", { class: "grow" }, [
           el("div", { class: "t", text: "Home Assistant" }),
-          el("div", { class: "s", text: s.entities.weight || "Mi Body Composition Scale · not mapped" }),
+          el("div", { class: "s", text: s.entities.bodymiscale || s.entities.weight || "Mi Body Composition Scale · not mapped" }),
         ]),
         el("span", {
-          class: d.integrations.ha_available && s.entities.weight ? "tag tag-accent" : "tag tag-neutral",
-          text: d.integrations.ha_available ? (s.entities.weight ? "Connected" : "Set up") : "No API",
+          class: d.integrations.ha_available && (s.entities.bodymiscale || s.entities.weight) ? "tag tag-accent" : "tag tag-neutral",
+          text: d.integrations.ha_available ? ((s.entities.bodymiscale || s.entities.weight) ? "Connected" : "Set up") : "No API",
         }),
       ]),
       el("div", { class: "srow" }, [
@@ -1196,6 +1196,14 @@ function screenSettings() {
         });
       },
     }, [
+      el("label", { class: "field" }, [
+        el("span", { text: "BodyMiScale entity (recommended)" }),
+        el("input", {
+          class: "input", name: "bodymiscale", value: s.entities.bodymiscale || "",
+          placeholder: "bodymiscale.your_name", autocomplete: "off", spellcheck: "false",
+        }),
+        el("small", { text: "Uses weight and body-composition attributes from one entity. Separate sensors below are fallback options." }),
+      ]),
       ...d.metrics.map((m) =>
         el("label", { class: "field" }, [
           el("span", { text: `${m.label} entity` }),

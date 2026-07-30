@@ -91,24 +91,30 @@ class Scheduler:
         written = 0
         for user in self.store.users():
             entities = user["settings"]["entities"]
+            bodymiscale_entity = entities.get("bodymiscale")
             weight_entity = entities.get("weight")
-            if not weight_entity:
+            if not bodymiscale_entity and not weight_entity:
                 continue
 
-            reading = self.hass.state(weight_entity)
-            if not reading["ok"] or reading["value"] is None:
-                continue
+            if bodymiscale_entity:
+                sample = self.hass.bodymiscale_state(bodymiscale_entity)
+                if sample is None:
+                    continue
+            else:
+                reading = self.hass.state(weight_entity)
+                if not reading["ok"] or reading["value"] is None:
+                    continue
 
-            sample = {"date": _day_of(reading["last_changed"]), "weight": reading["value"]}
-            for key in METRIC_KEYS:
-                if key == "weight":
-                    continue
-                entity = entities.get(key)
-                if not entity:
-                    continue
-                metric = self.hass.state(entity)
-                if metric["ok"]:
-                    sample[key] = metric["value"]
+                sample = {"date": _day_of(reading["last_changed"]), "weight": reading["value"]}
+                for key in METRIC_KEYS:
+                    if key == "weight":
+                        continue
+                    entity = entities.get(key)
+                    if not entity:
+                        continue
+                    metric = self.hass.state(entity)
+                    if metric["ok"]:
+                        sample[key] = metric["value"]
 
             if self.store.record_weight_sample(user["id"], sample):
                 written += 1
@@ -120,22 +126,31 @@ class Scheduler:
                     self.store.record_steps(user["id"], today_iso(), int(steps["value"]))
         return written
 
-    def backfill_weight(self, user_id: str, days: int = 180) -> int:
-        """Pull body-composition history out of the HA recorder once."""
+    def backfill_weight(self, user_id: str) -> int:
+        """Pull all body-composition history retained by the HA recorder."""
         user = self.store.user(user_id)
         if user is None or not self.hass.available:
             return 0
         entities = user["settings"]["entities"]
-        if not entities.get("weight"):
+        bodymiscale_entity = entities.get("bodymiscale")
+        if not bodymiscale_entity and not entities.get("weight"):
             return 0
 
         series: dict[str, dict[str, float]] = {}
-        for key in METRIC_KEYS:
-            entity = entities.get(key)
-            if not entity:
-                continue
-            for point in self.hass.history(entity, days=days):
-                series.setdefault(point["date"], {})[key] = point["value"]
+        if bodymiscale_entity:
+            for sample in self.hass.bodymiscale_history(bodymiscale_entity):
+                series[sample["date"]] = {
+                    key: value
+                    for key in METRIC_KEYS
+                    if (value := sample.get(key)) is not None
+                }
+        else:
+            for key in METRIC_KEYS:
+                entity = entities.get(key)
+                if not entity:
+                    continue
+                for point in self.hass.history(entity):
+                    series.setdefault(point["date"], {})[key] = point["value"]
 
         written = 0
         for day, values in sorted(series.items()):

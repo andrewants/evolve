@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.0
+
+- Prefer one legacy `bodymiscale.<person>` entity and read all body metrics
+  from its attributes, while retaining separate metric sensors as a fallback.
+- Import the complete history retained by Home Assistant Recorder, including
+  BodyMiScale attributes, with no fixed day or local sample limit.
+- Fetch every Hevy workout page and retain/return the complete workout list.
+  A failed page no longer replaces stored history with a partial result.
+
 ## 2.0.0
 
 Rebuilt as **Momentum**, implementing the Claude Design handoff.

@@ -141,6 +141,11 @@ class StoreTests(unittest.TestCase):
         dates = [s["date"] for s in self.store.user(self.uid)["weight_samples"]]
         self.assertEqual(dates, sorted(dates))
 
+    def test_workout_storage_does_not_truncate_history(self) -> None:
+        workouts = [{"id": str(index), "date": DAY(index)} for index in range(250)]
+        self.assertTrue(self.store.replace_workouts(self.uid, workouts))
+        self.assertEqual(len(self.store.user(self.uid)["workouts"]), 250)
+
     # -- isolation and durability ---------------------------------------
 
     def test_members_cannot_see_each_others_data(self) -> None:
@@ -321,6 +326,157 @@ class IntegrationClientTests(unittest.TestCase):
         client = HomeAssistant(None)
         self.assertFalse(client.available)
         self.assertFalse(client.state("sensor.anything")["ok"])
+
+    def test_bodymiscale_reads_current_and_complete_attribute_history(self) -> None:
+        import integrations
+
+        hits = []
+
+        class Core(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                hits.append(self.path)
+                if "/history/period/" in self.path:
+                    body = json.dumps([[
+                        {
+                            "state": "on",
+                            "attributes": {
+                                "weight": "61.2 kg",
+                                "body_fat": 23.4,
+                                "muscle_mass": 44.1,
+                                "bmi": 21.8,
+                                "water": 52.3,
+                                "visceral_fat": 7,
+                            },
+                            "last_changed": "2024-01-02T07:00:00+00:00",
+                        },
+                        {
+                            "state": "on",
+                            "attributes": {"weight": 60.8, "body_fat": 23.1},
+                            "last_changed": "2026-07-28T07:00:00+00:00",
+                        },
+                    ]]).encode()
+                else:
+                    body = json.dumps({
+                        "state": "on",
+                        "attributes": {
+                            "weight": 60.8,
+                            "body_fat": 23.1,
+                            "muscle_mass": 44.4,
+                            "bmi": 21.6,
+                            "water": 52.8,
+                            "visceral_fat": 7,
+                        },
+                        "last_updated": "2026-07-28T07:00:00+00:00",
+                    }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        base = self.stub(Core)
+        original = integrations.HA_CORE_API
+        integrations.HA_CORE_API = f"{base}/api"
+        try:
+            client = HomeAssistant("token")
+            current = client.bodymiscale_state("bodymiscale.maya")
+            self.assertEqual(current["weight"], 60.8)
+            self.assertEqual(current["fat"], 23.1)
+            self.assertEqual(current["visceral"], 7)
+
+            history = client.bodymiscale_history("bodymiscale.maya")
+            self.assertEqual([sample["date"] for sample in history], ["2024-01-02", "2026-07-28"])
+            self.assertEqual(history[0]["weight"], 61.2)
+            history_url = next(path for path in hits if "/history/period/" in path)
+            self.assertIn("1970-01-01", history_url)
+            self.assertNotIn("no_attributes", history_url)
+            self.assertNotIn("minimal_response", history_url)
+        finally:
+            integrations.HA_CORE_API = original
+
+    def test_hevy_fetches_every_page(self) -> None:
+        import integrations
+
+        pages = []
+
+        class HevyApi(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                page = int(self.path.split("page=")[1].split("&")[0])
+                pages.append(page)
+                start = (page - 1) * 10
+                count = 10 if page < 3 else 3
+                workouts = [
+                    {
+                        "id": str(index),
+                        "title": f"Workout {index}",
+                        "start_time": f"2026-07-{(index % 28) + 1:02d}T07:00:00Z",
+                        "exercises": [],
+                    }
+                    for index in range(start, start + count)
+                ]
+                body = json.dumps({"workouts": workouts, "page_count": 3}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        base = self.stub(HevyApi)
+        original = integrations.HEVY_API
+        integrations.HEVY_API = f"{base}/v1"
+        try:
+            workouts, error = Hevy("key").workouts()
+            self.assertIsNone(error)
+            self.assertEqual(len(workouts), 23)
+            self.assertEqual(pages, [1, 2, 3])
+        finally:
+            integrations.HEVY_API = original
+
+    def test_hevy_reports_later_page_failure_instead_of_accepting_partial_data(self) -> None:
+        import integrations
+
+        class HevyApi(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                page = int(self.path.split("page=")[1].split("&")[0])
+                if page == 2:
+                    self.send_response(503)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                workouts = [
+                    {
+                        "id": str(index),
+                        "title": "Workout",
+                        "start_time": "2026-07-28T07:00:00Z",
+                        "exercises": [],
+                    }
+                    for index in range(10)
+                ]
+                body = json.dumps({"workouts": workouts}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        base = self.stub(HevyApi)
+        original = integrations.HEVY_API
+        integrations.HEVY_API = f"{base}/v1"
+        try:
+            workouts, error = Hevy("key").workouts()
+            self.assertEqual(len(workouts), 10)
+            self.assertEqual(error, "HTTP 503")
+        finally:
+            integrations.HEVY_API = original
 
     def test_hevy_reports_a_bad_key(self) -> None:
         import integrations
