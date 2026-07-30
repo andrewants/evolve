@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local dev data written by server.py when run outside the container
+dashboard.json
+dashboard.json.corrupt
+
+node_modules/
+*.log
+.DS_Store
