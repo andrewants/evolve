@@ -1,13 +1,17 @@
-# Self Improvement Dashboard
+# Momentum
 
-Habits, goals and daily reflection, served into the Home Assistant sidebar
-over ingress.
+A self-improvement dashboard for the whole household, served into the Home
+Assistant sidebar and (optionally) through a Cloudflare tunnel.
 
-- **Habits** with weekly targets, streaks, and a 12-week consistency heatmap
-- **Goals** with progress meters, units, and due-date tracking
-- **Reflection** — a daily note with mood and energy
-- Optional **sensor tiles** pulled read-only from your existing entities
-- Data stored in `/data`, so it is covered by Home Assistant backups
-- No third-party Python packages, no external network calls, no second login
+- **Days-since counters** — three on the dashboard, milestone nudges over Telegram
+- **Body composition** — Mi Body Composition Scale via Home Assistant, six metrics charted
+- **Gym** — Hevy sync, week streak, volume and recent sessions
+- **Affirmations** — pin one to the dashboard, get it sent daily by the bot
+- **Habits and journal** — a daily tick list and somewhere to think
+- **Multi-user** — every member has a PIN and their own data
+- **Telegram** — approve who is allowed to receive notifications
 
-See [DOCS.md](DOCS.md) for configuration and the API reference.
+Self-hosted fonts and icons, no CDN, no third-party Python packages.
+
+See [DOCS.md](DOCS.md) for setup, integrations, and the security notes that
+matter if you expose it with cloudflared.

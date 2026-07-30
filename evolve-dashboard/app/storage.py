@@ -1,62 +1,126 @@
-"""Durable JSON store for dashboard state.
+"""Durable JSON store for Momentum.
 
-Everything lives in a single document under /data so it survives add-on
-restarts and updates, and shows up in Home Assistant's add-on backups.
+One document under /data, so it survives add-on restarts and is captured by
+Home Assistant add-on backups. Household members each own their counters,
+habits, affirmations, journal and synced body/gym data; bot users and the
+Telegram token are shared.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import tempfile
 import threading
 import uuid
 from datetime import date, datetime, timezone
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
-DEFAULT_HABITS = [
-    {"name": "Move for 30 minutes", "icon": "activity", "color": "iris", "target_per_week": 5},
-    {"name": "Read", "icon": "book", "color": "aqua", "target_per_week": 7},
-    {"name": "Lights out before 23:30", "icon": "moon", "color": "violet", "target_per_week": 6},
+PIN_ITERATIONS = 200_000
+MAX_JOURNAL_ENTRIES = 1000
+MAX_WEIGHT_SAMPLES = 2000
+MAX_WORKOUTS = 200
+
+COUNTER_ICONS = [
+    "prohibit",
+    "wine",
+    "hamburger",
+    "coffee",
+    "device-mobile",
+    "currency-dollar",
 ]
+
+# Body-composition metrics the Mi scale exposes, in the order the Weight
+# screen shows them. `key` doubles as the sample field and the chip id.
+METRICS = [
+    {"key": "weight", "label": "Weight", "unit": "kg"},
+    {"key": "fat", "label": "Body fat", "unit": "%"},
+    {"key": "muscle", "label": "Muscle", "unit": "kg"},
+    {"key": "bmi", "label": "BMI", "unit": ""},
+    {"key": "water", "label": "Water", "unit": "%"},
+    {"key": "visceral", "label": "Visceral fat", "unit": ""},
+]
+METRIC_KEYS = [metric["key"] for metric in METRICS]
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def today_iso() -> str:
+    return date.today().isoformat()
+
+
 def new_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def hash_pin(pin: str, salt: str | None = None) -> tuple[str, str]:
+    """PBKDF2 the PIN. A 4-digit space is small, so the server also rate
+    limits attempts — see server.py."""
+    salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt), PIN_ITERATIONS)
+    return digest.hex(), salt
+
+
+def verify_pin(pin: str, expected_hash: str, salt: str) -> bool:
+    if not expected_hash or not salt:
+        return False
+    candidate, _ = hash_pin(pin, salt)
+    return hmac.compare_digest(candidate, expected_hash)
+
+
+def default_user_settings() -> dict[str, Any]:
+    return {
+        "steps_goal": 10000,
+        "weekly_gym_goal": 3,
+        "reminder": {"on": False, "time": "08:00"},
+        "telegram_chat_id": "",
+        "hevy_key": "",
+        # Entity IDs are per member: a Mi scale creates a separate set of
+        # sensors for each person it recognises.
+        "entities": {key: "" for key in METRIC_KEYS} | {"steps": ""},
+    }
 
 
 def empty_state() -> dict[str, Any]:
     return {
         "version": SCHEMA_VERSION,
-        "habits": [],
-        "checkins": {},
-        "goals": [],
-        "journal": [],
+        "users": [],
+        "bot_users": [],
+        "settings": {
+            "telegram": {"token": "", "default_chat": "", "last_update_id": 0},
+            "health_webhook_key": secrets.token_urlsafe(24),
+        },
+        "session_secret": secrets.token_hex(32),
         "created": now_iso(),
     }
 
 
-def seeded_state() -> dict[str, Any]:
-    state = empty_state()
-    for spec in DEFAULT_HABITS:
-        state["habits"].append(
-            {
-                "id": new_id(),
-                "name": spec["name"],
-                "icon": spec["icon"],
-                "color": spec["color"],
-                "target_per_week": spec["target_per_week"],
-                "archived": False,
-                "created": now_iso(),
-            }
-        )
-    return state
+def new_user(name: str, pin: str | None = None) -> dict[str, Any]:
+    pin_hash, salt = hash_pin(pin) if pin else ("", "")
+    return {
+        "id": new_id(),
+        "name": name.strip()[:40] or "Member",
+        "pin_hash": pin_hash,
+        "pin_salt": salt,
+        "counters": [],
+        "affirmations": [],
+        "habits": [],
+        "checkins": {},
+        "journal": [],
+        "weight_samples": [],
+        "workouts": [],
+        "gym_synced_at": None,
+        "milestones_sent": [],
+        "settings": default_user_settings(),
+        "created": now_iso(),
+    }
 
 
 class Store:
@@ -71,39 +135,61 @@ class Store:
 
     def _load(self) -> dict[str, Any]:
         if not os.path.exists(self._path):
-            state = seeded_state()
+            state = empty_state()
             self._write(state)
             return state
         try:
             with open(self._path, encoding="utf-8") as handle:
                 state = json.load(handle)
         except (OSError, ValueError):
-            # A truncated or hand-edited file should not take the add-on
-            # down; move it aside so the user can still recover it.
-            broken = f"{self._path}.corrupt"
+            # A truncated or hand-edited file must not take the add-on down;
+            # move it aside so the user can still recover it.
             try:
-                os.replace(self._path, broken)
+                os.replace(self._path, f"{self._path}.corrupt")
             except OSError:
                 pass
-            state = seeded_state()
+            state = empty_state()
             self._write(state)
             return state
-        return self._migrate(state)
+        migrated = self._migrate(state)
+        self._write(migrated)
+        return migrated
 
     def _migrate(self, state: dict[str, Any]) -> dict[str, Any]:
         state.setdefault("version", SCHEMA_VERSION)
-        state.setdefault("habits", [])
-        state.setdefault("checkins", {})
-        state.setdefault("goals", [])
-        state.setdefault("journal", [])
-        state.setdefault("created", now_iso())
+        state.setdefault("users", [])
+        state.setdefault("bot_users", [])
+        state.setdefault("session_secret", secrets.token_hex(32))
+        settings = state.setdefault("settings", {})
+        telegram = settings.setdefault("telegram", {})
+        telegram.setdefault("token", "")
+        telegram.setdefault("default_chat", "")
+        telegram.setdefault("last_update_id", 0)
+        settings.setdefault("health_webhook_key", secrets.token_urlsafe(24))
+
+        for user in state["users"]:
+            user.setdefault("counters", [])
+            user.setdefault("affirmations", [])
+            user.setdefault("habits", [])
+            user.setdefault("checkins", {})
+            user.setdefault("journal", [])
+            user.setdefault("weight_samples", [])
+            user.setdefault("workouts", [])
+            user.setdefault("gym_synced_at", None)
+            user.setdefault("milestones_sent", [])
+            defaults = default_user_settings()
+            user_settings = user.setdefault("settings", defaults)
+            for key, value in defaults.items():
+                user_settings.setdefault(key, value)
+            for key in defaults["entities"]:
+                user_settings["entities"].setdefault(key, "")
         return state
 
     def _write(self, state: dict[str, Any]) -> None:
         directory = os.path.dirname(self._path) or "."
         os.makedirs(directory, exist_ok=True)
         handle = tempfile.NamedTemporaryFile(
-            "w", dir=directory, prefix=".evolve-", suffix=".tmp", delete=False, encoding="utf-8"
+            "w", dir=directory, prefix=".momentum-", suffix=".tmp", delete=False, encoding="utf-8"
         )
         try:
             with handle:
@@ -111,6 +197,7 @@ class Store:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(handle.name, self._path)
+            os.chmod(self._path, 0o600)
         except BaseException:
             try:
                 os.unlink(handle.name)
@@ -125,144 +212,434 @@ class Store:
     def _commit(self) -> None:
         self._write(self._state)
 
-    # -- habits ---------------------------------------------------------
+    # -- accessors ------------------------------------------------------
 
-    def add_habit(self, payload: dict[str, Any]) -> dict[str, Any]:
+    @property
+    def session_secret(self) -> bytes:
         with self._lock:
-            habit = {
-                "id": new_id(),
-                "name": (payload.get("name") or "Untitled habit").strip()[:80],
-                "icon": payload.get("icon") or "spark",
-                "color": payload.get("color") or "iris",
-                "target_per_week": _clamp_int(payload.get("target_per_week"), 1, 7, 7),
-                "archived": False,
-                "created": now_iso(),
-            }
-            self._state["habits"].append(habit)
+            return bytes.fromhex(self._state["session_secret"])
+
+    @property
+    def health_webhook_key(self) -> str:
+        with self._lock:
+            return self._state["settings"]["health_webhook_key"]
+
+    def telegram_config(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._state["settings"]["telegram"])
+
+    def users(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return json.loads(json.dumps(self._state["users"]))
+
+    def user(self, user_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            found = _find(self._state["users"], user_id)
+            return json.loads(json.dumps(found)) if found else None
+
+    def _user_ref(self, user_id: str) -> dict[str, Any] | None:
+        return _find(self._state["users"], user_id)
+
+    def update(self, mutate) -> Any:
+        """Run `mutate(state)` under the lock and persist the result."""
+        with self._lock:
+            result = mutate(self._state)
             self._commit()
-            return habit
+            return result
 
-    def update_habit(self, habit_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    # -- household ------------------------------------------------------
+
+    def add_user(self, name: str, pin: str | None) -> dict[str, Any]:
         with self._lock:
-            habit = _find(self._state["habits"], habit_id)
-            if habit is None:
-                return None
-            if "name" in payload:
-                habit["name"] = (payload["name"] or habit["name"]).strip()[:80]
-            for field in ("icon", "color"):
-                if payload.get(field):
-                    habit[field] = payload[field]
-            if "target_per_week" in payload:
-                habit["target_per_week"] = _clamp_int(
-                    payload["target_per_week"], 1, 7, habit["target_per_week"]
-                )
-            if "archived" in payload:
-                habit["archived"] = bool(payload["archived"])
+            user = new_user(name, pin)
+            self._state["users"].append(user)
             self._commit()
-            return habit
+            return json.loads(json.dumps(user))
 
-    def delete_habit(self, habit_id: str) -> bool:
+    def set_pin(self, user_id: str, pin: str) -> bool:
         with self._lock:
-            habits = self._state["habits"]
-            remaining = [h for h in habits if h["id"] != habit_id]
-            if len(remaining) == len(habits):
+            user = self._user_ref(user_id)
+            if user is None:
                 return False
-            self._state["habits"] = remaining
-            self._state["checkins"].pop(habit_id, None)
+            user["pin_hash"], user["pin_salt"] = hash_pin(pin)
             self._commit()
             return True
 
-    def toggle_checkin(self, habit_id: str, day: str) -> dict[str, Any] | None:
+    def check_pin(self, user_id: str, pin: str) -> bool:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return False
+            return verify_pin(pin, user.get("pin_hash", ""), user.get("pin_salt", ""))
+
+    def rename_user(self, user_id: str, name: str) -> bool:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return False
+            user["name"] = name.strip()[:40] or user["name"]
+            self._commit()
+            return True
+
+    def delete_user(self, user_id: str) -> bool:
+        with self._lock:
+            users = self._state["users"]
+            remaining = [u for u in users if u["id"] != user_id]
+            if len(remaining) == len(users):
+                return False
+            self._state["users"] = remaining
+            self._commit()
+            return True
+
+    # -- counters -------------------------------------------------------
+
+    def save_counter(self, user_id: str, payload: dict[str, Any], counter_id: str | None) -> dict[str, Any] | None:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return None
+            name = (payload.get("name") or "").strip()[:60]
+            if not name:
+                raise ValueError("counter needs a name")
+            since = payload.get("date") or today_iso()
+            _require_day(since)
+            icon = payload.get("icon") if payload.get("icon") in COUNTER_ICONS else "prohibit"
+            wants_dash = bool(payload.get("on_dash"))
+
+            if counter_id:
+                counter = _find(user["counters"], counter_id)
+                if counter is None:
+                    return None
+            else:
+                counter = {"id": new_id(), "created": now_iso()}
+                user["counters"].append(counter)
+
+            counter.update({"name": name, "date": since, "icon": icon})
+            # The dashboard row holds exactly three; refuse the fourth
+            # rather than silently dropping one.
+            on_dash_count = sum(
+                1 for c in user["counters"] if c.get("on_dash") and c["id"] != counter["id"]
+            )
+            counter["on_dash"] = wants_dash and on_dash_count < 3
+            self._commit()
+            return dict(counter)
+
+    def toggle_counter_dash(self, user_id: str, counter_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return None
+            counter = _find(user["counters"], counter_id)
+            if counter is None:
+                return None
+            if not counter.get("on_dash"):
+                shown = sum(1 for c in user["counters"] if c.get("on_dash"))
+                if shown >= 3:
+                    raise ValueError("Dashboard shows max 3 counters")
+            counter["on_dash"] = not counter.get("on_dash")
+            self._commit()
+            return dict(counter)
+
+    def reset_counter(self, user_id: str, counter_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return None
+            counter = _find(user["counters"], counter_id)
+            if counter is None:
+                return None
+            previous = days_since(counter["date"])
+            best = max(int(counter.get("best", 0)), previous)
+            counter.update({"date": today_iso(), "best": best})
+            # A fresh run should be able to earn its milestones again.
+            user["milestones_sent"] = [
+                m for m in user["milestones_sent"] if not m.startswith(f"{counter_id}:")
+            ]
+            self._commit()
+            return dict(counter)
+
+    def delete_counter(self, user_id: str, counter_id: str) -> bool:
+        return self._delete_from(user_id, "counters", counter_id)
+
+    # -- affirmations ---------------------------------------------------
+
+    def save_affirmation(self, user_id: str, text: str, affirmation_id: str | None) -> dict[str, Any] | None:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return None
+            text = (text or "").strip()[:500]
+            if not text:
+                raise ValueError("affirmation needs text")
+            if affirmation_id:
+                item = _find(user["affirmations"], affirmation_id)
+                if item is None:
+                    return None
+                item["text"] = text
+            else:
+                item = {
+                    "id": new_id(),
+                    "text": text,
+                    "pinned": not user["affirmations"],
+                    "created": now_iso(),
+                }
+                user["affirmations"].append(item)
+            self._commit()
+            return dict(item)
+
+    def pin_affirmation(self, user_id: str, affirmation_id: str) -> bool:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None or _find(user["affirmations"], affirmation_id) is None:
+                return False
+            for item in user["affirmations"]:
+                item["pinned"] = item["id"] == affirmation_id
+            self._commit()
+            return True
+
+    def delete_affirmation(self, user_id: str, affirmation_id: str) -> bool:
+        return self._delete_from(user_id, "affirmations", affirmation_id)
+
+    # -- habits ---------------------------------------------------------
+
+    def save_habit(self, user_id: str, name: str, habit_id: str | None) -> dict[str, Any] | None:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return None
+            name = (name or "").strip()[:80]
+            if not name:
+                raise ValueError("habit needs a name")
+            if habit_id:
+                habit = _find(user["habits"], habit_id)
+                if habit is None:
+                    return None
+                habit["name"] = name
+            else:
+                habit = {"id": new_id(), "name": name, "created": now_iso()}
+                user["habits"].append(habit)
+            self._commit()
+            return dict(habit)
+
+    def toggle_habit(self, user_id: str, habit_id: str, day: str) -> dict[str, Any] | None:
         _require_day(day)
         with self._lock:
-            if _find(self._state["habits"], habit_id) is None:
+            user = self._user_ref(user_id)
+            if user is None or _find(user["habits"], habit_id) is None:
                 return None
-            days = set(self._state["checkins"].get(habit_id, []))
+            days = set(user["checkins"].get(habit_id, []))
             done = day not in days
             days.add(day) if done else days.discard(day)
-            self._state["checkins"][habit_id] = sorted(days)
+            user["checkins"][habit_id] = sorted(days)
             self._commit()
             return {"habit_id": habit_id, "date": day, "done": done}
 
-    # -- goals ----------------------------------------------------------
-
-    def add_goal(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def delete_habit(self, user_id: str, habit_id: str) -> bool:
         with self._lock:
-            goal = {
-                "id": new_id(),
-                "title": (payload.get("title") or "Untitled goal").strip()[:120],
-                "notes": (payload.get("notes") or "").strip()[:2000],
-                "unit": (payload.get("unit") or "").strip()[:24],
-                "current": _clamp_float(payload.get("current"), 0.0),
-                "target": _clamp_float(payload.get("target"), 100.0) or 100.0,
-                "due": payload.get("due") or None,
-                "done": False,
-                "created": now_iso(),
-            }
-            self._state["goals"].append(goal)
-            self._commit()
-            return goal
-
-    def update_goal(self, goal_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-        with self._lock:
-            goal = _find(self._state["goals"], goal_id)
-            if goal is None:
-                return None
-            if "title" in payload:
-                goal["title"] = (payload["title"] or goal["title"]).strip()[:120]
-            if "notes" in payload:
-                goal["notes"] = (payload["notes"] or "").strip()[:2000]
-            if "unit" in payload:
-                goal["unit"] = (payload["unit"] or "").strip()[:24]
-            if "current" in payload:
-                goal["current"] = _clamp_float(payload["current"], goal["current"])
-            if "target" in payload:
-                goal["target"] = _clamp_float(payload["target"], goal["target"]) or goal["target"]
-            if "due" in payload:
-                goal["due"] = payload["due"] or None
-            if "done" in payload:
-                goal["done"] = bool(payload["done"])
-            self._commit()
-            return goal
-
-    def delete_goal(self, goal_id: str) -> bool:
-        with self._lock:
-            goals = self._state["goals"]
-            remaining = [g for g in goals if g["id"] != goal_id]
-            if len(remaining) == len(goals):
+            user = self._user_ref(user_id)
+            if user is None:
                 return False
-            self._state["goals"] = remaining
+            habits = user["habits"]
+            remaining = [h for h in habits if h["id"] != habit_id]
+            if len(remaining) == len(habits):
+                return False
+            user["habits"] = remaining
+            user["checkins"].pop(habit_id, None)
             self._commit()
             return True
 
     # -- journal --------------------------------------------------------
 
-    def add_entry(self, payload: dict[str, Any]) -> dict[str, Any]:
-        day = payload.get("date") or date.today().isoformat()
+    def add_journal(self, user_id: str, text: str, day: str | None = None) -> dict[str, Any] | None:
+        day = day or today_iso()
         _require_day(day)
         with self._lock:
-            entry = {
-                "id": new_id(),
-                "date": day,
-                "mood": _clamp_int(payload.get("mood"), 1, 5, 3),
-                "energy": _clamp_int(payload.get("energy"), 1, 5, 3),
-                "text": (payload.get("text") or "").strip()[:8000],
-                "created": now_iso(),
-            }
-            self._state["journal"].insert(0, entry)
-            del self._state["journal"][500:]
+            user = self._user_ref(user_id)
+            if user is None:
+                return None
+            text = (text or "").strip()[:8000]
+            if not text:
+                raise ValueError("entry is empty")
+            entry = {"id": new_id(), "date": day, "text": text, "created": now_iso()}
+            user["journal"].insert(0, entry)
+            del user["journal"][MAX_JOURNAL_ENTRIES:]
             self._commit()
-            return entry
+            return dict(entry)
 
-    def delete_entry(self, entry_id: str) -> bool:
+    def delete_journal(self, user_id: str, entry_id: str) -> bool:
+        return self._delete_from(user_id, "journal", entry_id)
+
+    # -- synced data ----------------------------------------------------
+
+    def record_weight_sample(self, user_id: str, sample: dict[str, Any]) -> bool:
+        """Append a body-composition sample, replacing same-day duplicates."""
         with self._lock:
-            entries = self._state["journal"]
-            remaining = [e for e in entries if e["id"] != entry_id]
-            if len(remaining) == len(entries):
+            user = self._user_ref(user_id)
+            if user is None:
                 return False
-            self._state["journal"] = remaining
+            day = sample.get("date") or today_iso()
+            _require_day(day)
+            clean = {"date": day}
+            for key in METRIC_KEYS:
+                value = sample.get(key)
+                clean[key] = None if value is None else _as_float(value)
+            if clean.get("weight") is None:
+                return False
+
+            samples = [s for s in user["weight_samples"] if s.get("date") != day]
+            samples.append(clean)
+            samples.sort(key=lambda s: s["date"])
+            user["weight_samples"] = samples[-MAX_WEIGHT_SAMPLES:]
             self._commit()
             return True
+
+    def replace_workouts(self, user_id: str, workouts: list[dict[str, Any]]) -> bool:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return False
+            user["workouts"] = workouts[:MAX_WORKOUTS]
+            user["gym_synced_at"] = now_iso()
+            self._commit()
+            return True
+
+    def record_steps(self, user_id: str, day: str, steps: int) -> bool:
+        _require_day(day)
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return False
+            user.setdefault("steps", {})[day] = max(0, int(steps))
+            # A rolling quarter is all the dashboard ever reads back.
+            for old in sorted(user["steps"])[:-120]:
+                user["steps"].pop(old, None)
+            self._commit()
+            return True
+
+    # -- settings -------------------------------------------------------
+
+    def update_user_settings(self, user_id: str, patch: dict[str, Any]) -> dict[str, Any] | None:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return None
+            settings = user["settings"]
+            if "steps_goal" in patch:
+                settings["steps_goal"] = _clamp_int(patch["steps_goal"], 1000, 60000, settings["steps_goal"])
+            if "weekly_gym_goal" in patch:
+                settings["weekly_gym_goal"] = _clamp_int(patch["weekly_gym_goal"], 1, 7, settings["weekly_gym_goal"])
+            if "hevy_key" in patch:
+                settings["hevy_key"] = str(patch["hevy_key"] or "").strip()[:200]
+            if "telegram_chat_id" in patch:
+                settings["telegram_chat_id"] = str(patch["telegram_chat_id"] or "").strip()[:40]
+            if isinstance(patch.get("reminder"), dict):
+                reminder = settings["reminder"]
+                if "on" in patch["reminder"]:
+                    reminder["on"] = bool(patch["reminder"]["on"])
+                if "time" in patch["reminder"]:
+                    reminder["time"] = _clean_time(patch["reminder"]["time"], reminder["time"])
+            if isinstance(patch.get("entities"), dict):
+                for key, value in patch["entities"].items():
+                    if key in settings["entities"]:
+                        settings["entities"][key] = str(value or "").strip()[:120]
+            self._commit()
+            return dict(settings)
+
+    def update_telegram(self, patch: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            telegram = self._state["settings"]["telegram"]
+            if "token" in patch:
+                telegram["token"] = str(patch["token"] or "").strip()[:120]
+            if "default_chat" in patch:
+                telegram["default_chat"] = str(patch["default_chat"] or "").strip()[:40]
+            self._commit()
+            return dict(telegram)
+
+    # -- bot users ------------------------------------------------------
+
+    def upsert_bot_user(self, chat_id: str, name: str, handle: str) -> dict[str, Any]:
+        with self._lock:
+            existing = next(
+                (u for u in self._state["bot_users"] if u["chat_id"] == str(chat_id)), None
+            )
+            if existing:
+                existing["name"] = name or existing["name"]
+                existing["handle"] = handle or existing["handle"]
+            else:
+                existing = {
+                    "id": new_id(),
+                    "chat_id": str(chat_id),
+                    "name": name or "Unknown user",
+                    "handle": handle or "",
+                    "status": "pending",
+                    "seen": now_iso(),
+                }
+                self._state["bot_users"].append(existing)
+            self._commit()
+            return dict(existing)
+
+    def set_bot_user_status(self, bot_user_id: str, status: str) -> bool:
+        if status not in ("approved", "pending"):
+            return False
+        with self._lock:
+            user = _find(self._state["bot_users"], bot_user_id)
+            if user is None:
+                return False
+            user["status"] = status
+            self._commit()
+            return True
+
+    def delete_bot_user(self, bot_user_id: str) -> bool:
+        with self._lock:
+            users = self._state["bot_users"]
+            remaining = [u for u in users if u["id"] != bot_user_id]
+            if len(remaining) == len(users):
+                return False
+            self._state["bot_users"] = remaining
+            self._commit()
+            return True
+
+    def approved_chat_ids(self) -> list[str]:
+        with self._lock:
+            return [u["chat_id"] for u in self._state["bot_users"] if u["status"] == "approved"]
+
+    def set_telegram_offset(self, update_id: int) -> None:
+        with self._lock:
+            self._state["settings"]["telegram"]["last_update_id"] = int(update_id)
+            self._commit()
+
+    def mark_milestone(self, user_id: str, key: str) -> bool:
+        """Record a milestone as announced. False if it already was."""
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None or key in user["milestones_sent"]:
+                return False
+            user["milestones_sent"].append(key)
+            del user["milestones_sent"][:-200]
+            self._commit()
+            return True
+
+    # -- helpers --------------------------------------------------------
+
+    def _delete_from(self, user_id: str, collection: str, item_id: str) -> bool:
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return False
+            items = user[collection]
+            remaining = [i for i in items if i["id"] != item_id]
+            if len(remaining) == len(items):
+                return False
+            user[collection] = remaining
+            self._commit()
+            return True
+
+
+def days_since(iso_day: str) -> int:
+    try:
+        return max(0, (date.today() - date.fromisoformat(iso_day)).days)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _find(items: list[dict[str, Any]], item_id: str) -> dict[str, Any] | None:
@@ -276,6 +653,14 @@ def _require_day(day: str) -> None:
         raise ValueError(f"expected an ISO date (YYYY-MM-DD), got {day!r}") from None
 
 
+def _clean_time(value: Any, fallback: str) -> str:
+    try:
+        hours, minutes = str(value).split(":")[:2]
+        return f"{int(hours) % 24:02d}:{int(minutes) % 60:02d}"
+    except (AttributeError, TypeError, ValueError):
+        return fallback
+
+
 def _clamp_int(value: Any, low: int, high: int, fallback: int) -> int:
     try:
         return max(low, min(high, int(value)))
@@ -283,11 +668,11 @@ def _clamp_int(value: Any, low: int, high: int, fallback: int) -> int:
         return fallback
 
 
-def _clamp_float(value: Any, fallback: float) -> float:
+def _as_float(value: Any) -> float | None:
     try:
         parsed = float(value)
     except (TypeError, ValueError):
-        return fallback
+        return None
     if parsed != parsed or parsed in (float("inf"), float("-inf")):
-        return fallback
-    return max(0.0, min(1_000_000.0, parsed))
+        return None
+    return round(parsed, 2)

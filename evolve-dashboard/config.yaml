@@ -1,10 +1,11 @@
 ---
-name: Self Improvement Dashboard
-version: "1.0.0"
-slug: evolve_dashboard
+name: Momentum
+version: "2.0.0"
+slug: momentum
 description: >-
-  Track habits, goals and daily reflection from a dark, focused dashboard
-  served straight into the Home Assistant sidebar.
+  Self-improvement dashboard — days-since counters, Mi scale body
+  composition, Hevy gym sync, affirmations and habits, with Telegram
+  reminders. Multi-user with PIN login.
 url: https://github.com/andrewants/evolve/tree/main/evolve-dashboard
 arch:
   - aarch64
@@ -16,19 +17,20 @@ init: false
 ingress: true
 ingress_port: 8099
 panel_icon: mdi:chart-timeline-variant-shimmer
-panel_title: Evolve
+panel_title: Momentum
 panel_admin: false
 homeassistant_api: true
+# Exposed so a Cloudflare tunnel can reach the app directly. Leave null to
+# keep it ingress-only; the app authenticates with PINs either way.
+ports:
+  8099/tcp: null
+ports_description:
+  8099/tcp: Web UI (only needed for a Cloudflare tunnel / reverse proxy)
 options:
   log_level: info
-  week_starts_on: monday
+  session_days: 14
   day_rollover_hour: 4
-  sensors: []
 schema:
   log_level: list(trace|debug|info|notice|warning|error|fatal)
-  week_starts_on: list(monday|sunday)
+  session_days: int(1,365)
   day_rollover_hour: int(0,12)
-  sensors:
-    - entity: str
-      label: str?
-      icon: str?

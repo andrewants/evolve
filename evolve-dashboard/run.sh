@@ -2,25 +2,23 @@
 # shellcheck shell=bash
 set -e
 
-export EVOLVE_PORT=8099
-export EVOLVE_DATA_DIR=/data
-export EVOLVE_WWW_DIR=/opt/evolve/www
+export MOMENTUM_PORT=8099
+export MOMENTUM_DATA_DIR=/data
+export MOMENTUM_WWW_DIR=/opt/momentum/www
 
-EVOLVE_LOG_LEVEL="$(bashio::config 'log_level' 'info')"
-EVOLVE_WEEK_STARTS_ON="$(bashio::config 'week_starts_on' 'monday')"
-EVOLVE_DAY_ROLLOVER_HOUR="$(bashio::config 'day_rollover_hour' '4')"
-EVOLVE_SENSORS="$(bashio::config 'sensors')"
-export EVOLVE_LOG_LEVEL EVOLVE_WEEK_STARTS_ON EVOLVE_DAY_ROLLOVER_HOUR EVOLVE_SENSORS
+MOMENTUM_LOG_LEVEL="$(bashio::config 'log_level' 'info')"
+MOMENTUM_SESSION_DAYS="$(bashio::config 'session_days' '14')"
+MOMENTUM_DAY_ROLLOVER_HOUR="$(bashio::config 'day_rollover_hour' '4')"
+export MOMENTUM_LOG_LEVEL MOMENTUM_SESSION_DAYS MOMENTUM_DAY_ROLLOVER_HOUR
 
-# Supervisor hands us a scoped token; the app uses it to read entity states
-# through the core proxy when the user has configured sensor tiles.
-export EVOLVE_SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN:-}"
+# Supervisor issues a scoped token; the app uses it to read the Mi scale and
+# step entities through the core proxy. It never writes to Home Assistant.
+export MOMENTUM_SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN:-}"
 
-# Supervisor injects TZ into add-on containers from the Home Assistant
-# system settings, so "today" lines up with the user's local midnight
-# without this add-on needing Supervisor API access of its own.
-export EVOLVE_TIMEZONE="${TZ:-UTC}"
+# Supervisor injects TZ from the Home Assistant system settings, so "today"
+# lines up with the user's local midnight.
+export MOMENTUM_TIMEZONE="${TZ:-UTC}"
 
-bashio::log.info "Starting Self Improvement Dashboard on port ${EVOLVE_PORT} (TZ=${EVOLVE_TIMEZONE})"
+bashio::log.info "Starting Momentum on port ${MOMENTUM_PORT} (TZ=${MOMENTUM_TIMEZONE})"
 
-exec python3 /opt/evolve/server.py
+exec python3 /opt/momentum/server.py

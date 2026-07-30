@@ -1,707 +1,1649 @@
-/* Self Improvement Dashboard — client.
+/* Momentum — client.
  *
- * Home Assistant ingress mounts this page under an opaque path prefix
- * (/api/hassio_ingress/<token>/), so every request is resolved against the
- * document's own directory rather than the server root.
+ * Reached two ways: Home Assistant ingress (which mounts the app under an
+ * opaque /api/hassio_ingress/<token>/ prefix) and a Cloudflare tunnel. Every
+ * request therefore resolves against the document's own directory, never the
+ * server root.
  */
-(() => {
-  'use strict';
+import ICONS from "./icons.js";
 
-  const BASE = (() => {
-    const path = window.location.pathname;
-    return path.endsWith('/') ? path : path.replace(/[^/]*$/, '');
-  })();
+const BASE = (() => {
+  const path = window.location.pathname;
+  return path.endsWith("/") ? path : path.replace(/[^/]*$/, "");
+})();
+const url = (endpoint) => BASE + endpoint.replace(/^\//, "");
 
-  const url = (endpoint) => BASE + endpoint.replace(/^\//, '');
+const DAY_MS = 86400000;
+const WEEK_COUNT = 8;
+const SPARK_W = 110;
+const SPARK_H = 48;
 
-  const COLORS = ['iris', 'violet', 'aqua', 'amber', 'rose', 'lime'];
-  const DAY_MS = 86400000;
-  const HEATMAP_WEEKS = 12;
-  const SENSOR_POLL_MS = 30000;
+const TABS = [
+  { key: "home", label: "Home", icon: "house" },
+  { key: "weight", label: "Weight", icon: "scales" },
+  { key: "gym", label: "Gym", icon: "barbell" },
+  { key: "affirm", label: "Affirm", icon: "sparkle" },
+  { key: "settings", label: "Settings", icon: "gear-six" },
+];
 
-  const store = {
-    habits: [],
-    checkins: {},
-    goals: [],
-    journal: [],
-    config: { today: isoToday(), week_starts_on: 'monday', sensors: [], ha_available: false },
-    sensors: [],
-    draft: { mood: 3, energy: 3 },
-  };
+const state = {
+  phase: "loading", // loading | setup | picking | pin | app
+  users: [],
+  loginUser: null,
+  pin: "",
+  pinError: "",
+  busy: false,
+  tab: "home",
+  sub: null, // counters | journal
+  metric: "weight",
+  modal: null,
+  editId: null,
+  form: {},
+  toast: null,
+  data: null,
+};
 
-  const $ = (id) => document.getElementById(id);
+// ─────────────────────────────────────────────────────────────── utilities
 
-  // ----------------------------------------------------------------- dates
+const $ = (sel, root = document) => root.querySelector(sel);
 
-  function isoToday() {
-    const now = new Date();
-    return toIso(now);
+function el(tag, props = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (value === null || value === undefined || value === false) continue;
+    if (key === "class") node.className = value;
+    else if (key === "text") node.textContent = value;
+    else if (key === "style") node.setAttribute("style", value);
+    else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+    else node.setAttribute(key, value === true ? "" : String(value));
   }
+  for (const child of [].concat(children)) if (child) node.append(child);
+  return node;
+}
 
-  function toIso(date) {
-    const y = date.getFullYear();
-    const m = String(date.getMonth() + 1).padStart(2, '0');
-    const d = String(date.getDate()).padStart(2, '0');
-    return `${y}-${m}-${d}`;
+/** Phosphor glyph as inline SVG. `fill` picks the filled variant. */
+function icon(name, { fill = false, cls = "icon", size = null } = {}) {
+  const body = ICONS[(fill ? "f-" : "") + name] ?? ICONS[name];
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 256 256");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", cls);
+  if (size) svg.style.fontSize = size;
+  svg.innerHTML = body || "";
+  return svg;
+}
+
+function svgEl(tag, props = {}, children = []) {
+  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [key, value] of Object.entries(props)) {
+    if (value === null || value === undefined || value === false) continue;
+    node.setAttribute(key, String(value));
   }
+  for (const child of [].concat(children)) if (child) node.append(child);
+  return node;
+}
 
-  function fromIso(iso) {
-    const [y, m, d] = iso.split('-').map(Number);
-    return new Date(y, m - 1, d);
+const pad = (n) => String(n).padStart(2, "0");
+const toIso = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fromIso = (iso) => {
+  const [y, m, d] = String(iso).split("-").map(Number);
+  return new Date(y, m - 1, d);
+};
+
+/** "Jul 30" — matches the mockup's date formatting. */
+const fmtShort = (iso) =>
+  fromIso(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const fmtLong = (iso) =>
+  fromIso(iso).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+const fmtSession = (iso) =>
+  fromIso(iso).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+
+function delta(current, previous, unit) {
+  if (current === null || previous === null || current === undefined || previous === undefined) return "—";
+  const diff = current - previous;
+  return `${diff > 0 ? "+" : ""}${diff.toFixed(1)}${unit ? ` ${unit}` : ""}`;
+}
+
+function toast(message, isError = false) {
+  state.toast = { message, isError };
+  render();
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => {
+    state.toast = null;
+    render();
+  }, 2400);
+}
+
+// ─────────────────────────────────────────────────────────────────── api
+
+async function api(endpoint, { method = "GET", body } = {}) {
+  const init = { method, headers: {}, credentials: "same-origin" };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
   }
-
-  function shiftIso(iso, days) {
-    return toIso(new Date(fromIso(iso).getTime() + days * DAY_MS));
+  let response;
+  try {
+    response = await fetch(url(endpoint), init);
+  } catch {
+    throw new Error("Cannot reach the server");
   }
-
-  /** Monday-or-Sunday-aligned start of the week containing `iso`. */
-  function weekStart(iso) {
-    const date = fromIso(iso);
-    const dow = date.getDay(); // 0 = Sunday
-    const offset = store.config.week_starts_on === 'sunday' ? dow : (dow + 6) % 7;
-    return shiftIso(iso, -offset);
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 401 && state.phase === "app") {
+    state.phase = "picking";
+    state.data = null;
+    loadSession();
+    throw new Error("Session expired — sign in again");
   }
+  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+  return payload;
+}
 
-  function formatLongDate(iso) {
-    return fromIso(iso).toLocaleDateString(undefined, {
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-    });
+async function guard(action, successMessage) {
+  if (state.busy) return;
+  state.busy = true;
+  try {
+    await action();
+    if (successMessage) toast(successMessage);
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    state.busy = false;
+    render();
   }
+}
 
-  function formatShortDate(iso) {
-    return fromIso(iso).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+// ────────────────────────────────────────────────────────────── selectors
+
+const data = () => state.data;
+
+function metricSeries(key) {
+  const samples = data().weight_samples || [];
+  return samples.filter((s) => s[key] !== null && s[key] !== undefined);
+}
+
+function weekCounts() {
+  // Eight Monday-aligned buckets; the last one is the week in progress.
+  const now = new Date();
+  const monday = new Date(now);
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+
+  const counts = new Array(WEEK_COUNT).fill(0);
+  for (const workout of data().workouts || []) {
+    const diffWeeks = Math.floor((monday - fromIso(workout.date)) / (7 * DAY_MS));
+    const bucket = WEEK_COUNT - 1 - diffWeeks;
+    if (bucket >= 0 && bucket < WEEK_COUNT) counts[bucket] += 1;
   }
+  return counts;
+}
 
-  function daysUntil(iso) {
-    return Math.round((fromIso(iso) - fromIso(store.config.today)) / DAY_MS);
+function gymStreak(counts) {
+  const goal = data().settings.weekly_gym_goal;
+  let streak = 0;
+  for (let i = counts.length - 1; i >= 0 && counts[i] >= goal; i -= 1) streak += 1;
+  return streak;
+}
+
+// ──────────────────────────────────────────────────────────────── charts
+
+function sparkline(values) {
+  if (values.length < 2) return null;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const points = values
+    .map((v, i) => {
+      const x = 4 + i * ((SPARK_W - 8) / (values.length - 1));
+      const y = 42 - ((v - min) / range) * 36;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return svgEl(
+    "svg",
+    { width: SPARK_W, height: SPARK_H, viewBox: `0 0 ${SPARK_W} ${SPARK_H}`, style: "flex:none;margin-top:6px" },
+    [svgEl("polyline", { points, fill: "none", stroke: "var(--color-accent)", "stroke-width": "1.5" })]
+  );
+}
+
+function metricChart(values) {
+  if (values.length < 2) {
+    return el("div", { class: "empty", text: "Not enough readings yet for a chart." });
   }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const px = (i) => 16 + i * (304 / (values.length - 1));
+  const py = (v) => 110 - ((v - min) / range) * 90;
 
-  // ------------------------------------------------------------------- dom
+  const points = values.map((v, i) => `${px(i).toFixed(1)},${py(v).toFixed(1)}`).join(" ");
+  const area = `M${values.map((v, i) => `${px(i).toFixed(1)} ${py(v).toFixed(1)}`).join(" L")} L320 110 L16 110 Z`;
 
-  function el(tag, props = {}, children = []) {
-    const node = document.createElement(tag);
-    for (const [key, value] of Object.entries(props)) {
-      if (value === null || value === undefined || value === false) continue;
-      if (key === 'class') node.className = value;
-      else if (key === 'text') node.textContent = value;
-      else if (key === 'html') node.innerHTML = value;
-      else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
-      else node.setAttribute(key, value === true ? '' : String(value));
-    }
-    for (const child of [].concat(children)) {
-      if (child) node.append(child);
-    }
-    return node;
-  }
+  return svgEl(
+    "svg",
+    { width: "100%", height: "130", viewBox: "0 0 326 130", preserveAspectRatio: "none", style: "margin-top:8px" },
+    [
+      svgEl("line", { x1: 16, y1: 110, x2: 320, y2: 110, stroke: "var(--color-neutral-700)", "stroke-width": 1 }),
+      svgEl("line", { x1: 16, y1: 60, x2: 320, y2: 60, stroke: "var(--color-neutral-800)", "stroke-width": 1 }),
+      svgEl("line", { x1: 16, y1: 15, x2: 320, y2: 15, stroke: "var(--color-neutral-800)", "stroke-width": 1 }),
+      svgEl("path", { d: area, fill: "var(--color-accent-900)", opacity: "0.5" }),
+      svgEl("polyline", { points, fill: "none", stroke: "var(--color-accent)", "stroke-width": 2 }),
+      svgEl("circle", {
+        cx: px(values.length - 1).toFixed(1),
+        cy: py(values[values.length - 1]).toFixed(1),
+        r: 3.5,
+        fill: "var(--color-accent-200)",
+      }),
+    ]
+  );
+}
 
-  function icon(path) {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 16 16');
-    svg.setAttribute('fill', 'none');
-    svg.setAttribute('stroke', 'currentColor');
-    svg.setAttribute('stroke-width', '2');
-    svg.setAttribute('stroke-linecap', 'round');
-    svg.setAttribute('stroke-linejoin', 'round');
-    svg.setAttribute('aria-hidden', 'true');
-    const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    shape.setAttribute('d', path);
-    svg.append(shape);
-    return svg;
-  }
+function stepsRing(steps, goal) {
+  const CIRC = 213.6;
+  const offset = (CIRC * (1 - Math.min(1, steps / goal))).toFixed(1);
+  return svgEl("svg", { width: 84, height: 84, viewBox: "0 0 84 84" }, [
+    svgEl("circle", { cx: 42, cy: 42, r: 34, fill: "none", stroke: "var(--color-neutral-700)", "stroke-width": 6 }),
+    svgEl("circle", {
+      cx: 42, cy: 42, r: 34, fill: "none",
+      stroke: "var(--color-accent)", "stroke-width": 6, "stroke-linecap": "round",
+      "stroke-dasharray": CIRC, "stroke-dashoffset": offset, transform: "rotate(-90 42 42)",
+    }),
+    svgEl("text", {
+      x: 42, y: 40, "text-anchor": "middle", fill: "var(--color-text)",
+      "font-size": 15, "font-weight": 500, "font-family": "var(--font-heading)",
+    }, [document.createTextNode(`${(steps / 1000).toFixed(1)}k`)]),
+    svgEl("text", {
+      x: 42, y: 54, "text-anchor": "middle", fill: "var(--color-neutral-400)", "font-size": 9,
+    }, [document.createTextNode(`of ${goal / 1000}k`)]),
+  ]);
+}
 
-  const CHECK_PATH = 'M3.5 8.5 6.5 11.5 12.5 4.5';
+// ───────────────────────────────────────────────────────────────── login
 
-  let toastTimer;
-  function toast(message, isError = false) {
-    const node = $('toast');
-    node.textContent = message;
-    node.classList.toggle('toast--error', isError);
-    node.classList.add('toast--on');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => node.classList.remove('toast--on'), 2600);
-  }
-
-  // ------------------------------------------------------------------- api
-
-  async function request(endpoint, options = {}) {
-    const init = { headers: {}, ...options };
-    if (init.body !== undefined && typeof init.body !== 'string') {
-      init.headers['Content-Type'] = 'application/json';
-      init.body = JSON.stringify(init.body);
-    }
-
-    let response;
-    try {
-      response = await fetch(url(endpoint), init);
-    } catch {
-      throw new Error('Cannot reach the add-on');
-    }
-
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(payload.error || `Request failed (${response.status})`);
-    }
-    return payload;
-  }
-
-  // ------------------------------------------------------------- selectors
-
-  const activeHabits = () => store.habits.filter((habit) => !habit.archived);
-
-  const isDone = (habitId, iso) => (store.checkins[habitId] || []).includes(iso);
-
-  function completionOn(iso) {
-    const habits = activeHabits();
-    if (!habits.length) return { done: 0, total: 0, ratio: 0 };
-    const done = habits.filter((habit) => isDone(habit.id, iso)).length;
-    return { done, total: habits.length, ratio: done / habits.length };
-  }
-
-  /** Consecutive days with at least one check-in, ending today or yesterday. */
-  function currentStreak() {
-    const today = store.config.today;
-    let cursor = completionOn(today).done > 0 ? today : shiftIso(today, -1);
-    let streak = 0;
-    // A year of history is plenty and keeps this bounded.
-    for (let i = 0; i < 366; i += 1) {
-      if (completionOn(cursor).done === 0) break;
-      streak += 1;
-      cursor = shiftIso(cursor, -1);
-    }
-    return streak;
-  }
-
-  function weekProgress() {
-    const start = weekStart(store.config.today);
-    const habits = activeHabits();
-    const target = habits.reduce((sum, habit) => sum + (habit.target_per_week || 7), 0);
-    let done = 0;
-    for (let i = 0; i < 7; i += 1) {
-      const iso = shiftIso(start, i);
-      done += habits.filter((habit) => isDone(habit.id, iso)).length;
-    }
-    return { done, target, ratio: target ? Math.min(1, done / target) : 0 };
-  }
-
-  // --------------------------------------------------------------- renders
-
-  function renderMasthead() {
-    const hour = new Date().getHours();
-    const greeting = hour < 5 ? 'Still up' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-    $('greeting').textContent = greeting;
-    $('today-label').textContent = formatLongDate(store.config.today);
-  }
-
-  function statCard({ label, value, unit, foot, offline }) {
-    return el('div', { class: `stat${offline ? ' stat--offline' : ''}` }, [
-      el('span', { class: 'stat__label', text: label }),
-      el('span', { class: 'stat__value numeric' }, [
-        document.createTextNode(value),
-        unit
-          ? el('span', {
-              class: /^[a-z]/i.test(unit) ? null : 'unit--symbol',
-              text: unit,
-            })
-          : null,
+function screenSetup() {
+  return el("div", { class: "login" }, [
+    el("div", { style: "margin-top:36px" }, [
+      el("div", { class: "brand-bar" }),
+      el("div", { class: "brand-name", text: "Momentum" }),
+      el("div", { class: "brand-sub", text: "Self-improvement dashboard" }),
+    ]),
+    el("form", {
+      style: "margin-top:44px;display:flex;flex-direction:column;gap:14px",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const form = new FormData(event.target);
+        guard(async () => {
+          await api("/api/setup", {
+            method: "POST",
+            body: { name: form.get("name"), pin: form.get("pin") },
+          });
+          await loadApp();
+        });
+      },
+    }, [
+      el("div", { class: "section-label", text: "Create the first member" }),
+      el("label", { class: "field" }, [
+        el("span", { text: "Name" }),
+        el("input", { class: "input", name: "name", maxlength: "40", required: true, autocomplete: "name" }),
       ]),
-      foot ? el('span', { class: 'stat__foot', text: foot }) : null,
+      el("label", { class: "field" }, [
+        el("span", { text: "4-digit PIN" }),
+        el("input", {
+          class: "input", name: "pin", required: true, inputmode: "numeric",
+          pattern: "\\d{4}", maxlength: "4", autocomplete: "new-password",
+        }),
+      ]),
+      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:44px", text: "Create" }),
+    ]),
+  ]);
+}
+
+function screenLogin() {
+  const head = el("div", { style: "margin-top:36px" }, [
+    el("div", { class: "brand-bar" }),
+    el("div", { class: "brand-name", text: "Momentum" }),
+    el("div", { class: "brand-sub", text: "Self-improvement dashboard" }),
+  ]);
+
+  if (state.phase === "picking") {
+    return el("div", { class: "login" }, [
+      head,
+      el("div", { style: "margin-top:44px" }, [
+        el("div", { class: "section-label", style: "margin-bottom:12px", text: "Who's this?" }),
+        el("div", { style: "display:flex;flex-direction:column;gap:10px" },
+          state.users.map((user) =>
+            el("button", {
+              class: "card user-btn",
+              type: "button",
+              onclick: () => {
+                state.loginUser = user;
+                state.pin = "";
+                state.pinError = "";
+                state.phase = "pin";
+                render();
+              },
+            }, [
+              el("div", { class: "avatar", text: user.initials }),
+              el("div", { style: "flex:1;min-width:0" }, [
+                el("div", { style: "font-size:15px;font-weight:500", text: user.name }),
+                el("div", { class: "muted-sm", text: user.meta }),
+              ]),
+              icon("caret-right", { cls: "icon", size: "16px" }),
+            ])
+          )
+        ),
+      ]),
     ]);
   }
 
-  function renderStats() {
-    const today = completionOn(store.config.today);
-    const week = weekProgress();
-    const streak = currentStreak();
-    const openGoals = store.goals.filter((goal) => !goal.done).length;
-
-    const cards = [
-      statCard({
-        label: 'Today',
-        value: `${today.done}/${today.total}`,
-        foot: today.total && today.done === today.total ? 'All clear' : 'habits completed',
-      }),
-      statCard({
-        label: 'Streak',
-        value: String(streak),
-        unit: streak === 1 ? 'day' : 'days',
-        foot: streak ? 'keep it going' : 'start one today',
-      }),
-      statCard({
-        label: 'This week',
-        value: String(Math.round(week.ratio * 100)),
-        unit: '%',
-        foot: `${week.done} of ${week.target} check-ins`,
-      }),
-      statCard({
-        label: 'Goals',
-        value: String(openGoals),
-        foot: `${store.goals.length - openGoals} completed`,
-      }),
-    ];
-
-    for (const sensor of store.sensors) {
-      cards.push(
-        statCard({
-          label: sensor.label || sensor.entity_id,
-          value: sensor.ok ? String(sensor.state) : '—',
-          unit: sensor.ok ? sensor.unit : '',
-          foot: sensor.ok ? sensor.entity_id : sensor.reason || 'unavailable',
-          offline: !sensor.ok,
+  const keys = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "back"];
+  return el("div", { class: "login" }, [
+    head,
+    el("div", { style: "margin-top:36px;display:flex;flex-direction:column;align-items:center;flex:1" }, [
+      el("div", { style: "font-size:14px;color:var(--color-neutral-300)" }, [
+        document.createTextNode("Enter PIN for "),
+        el("span", { style: "color:var(--color-text);font-weight:500", text: state.loginUser.name }),
+      ]),
+      el("div", { class: "pin-dots" },
+        [0, 1, 2, 3].map((i) => el("div", { class: `pin-dot${i < state.pin.length ? " pin-dot--on" : ""}` }))
+      ),
+      el("div", { class: "pin-error", text: state.pinError }),
+      el("div", { class: "keypad" },
+        keys.map((key) => {
+          if (key === "") return el("div", { class: "key key--blank" });
+          return el("button", {
+            class: "key",
+            type: "button",
+            "aria-label": key === "back" ? "Delete" : key,
+            onclick: () => pressKey(key),
+          }, key === "back" ? [icon("backspace")] : [document.createTextNode(key)]);
         })
-      );
-    }
+      ),
+      el("button", {
+        style: "color:var(--color-accent-300);font-size:13px;padding:14px;margin-top:12px",
+        type: "button",
+        text: `Not ${state.loginUser.name}? Switch user`,
+        onclick: () => {
+          state.phase = "picking";
+          state.loginUser = null;
+          state.pin = "";
+          state.pinError = "";
+          render();
+        },
+      }),
+    ]),
+  ]);
+}
 
-    $('stats').replaceChildren(...cards);
+function pressKey(key) {
+  if (state.busy) return;
+  if (key === "back") {
+    state.pin = state.pin.slice(0, -1);
+    state.pinError = "";
+    render();
+    return;
   }
+  if (state.pin.length >= 4) return;
+  state.pin += key;
+  state.pinError = "";
+  render();
 
-  function renderHabits() {
-    const list = $('habits');
-    const habits = activeHabits();
-    const today = store.config.today;
-
-    if (!habits.length) {
-      list.replaceChildren(el('li', { class: 'empty', text: 'No habits yet — add your first one above.' }));
-      $('today-progress').textContent = '';
-      return;
-    }
-
-    const start = weekStart(today);
-    const nodes = habits.map((habit) => {
-      const done = isDone(habit.id, today);
-
-      const pips = [];
-      for (let i = 0; i < 7; i += 1) {
-        const iso = shiftIso(start, i);
-        pips.push(
-          el('span', {
-            class: `pip${isDone(habit.id, iso) ? ' pip--done' : ''}${iso === today ? ' pip--today' : ''}`,
-          })
-        );
-      }
-
-      const weekCount = pips.filter((pip) => pip.classList.contains('pip--done')).length;
-
-      return el('li', { class: `habit color-${habit.color}${done ? ' habit--done' : ''}` }, [
-        el(
-          'button',
-          {
-            class: 'check',
-            type: 'button',
-            'aria-pressed': String(done),
-            'aria-label': `${done ? 'Undo' : 'Complete'} ${habit.name}`,
-            'data-toggle': habit.id,
-          },
-          [icon(CHECK_PATH)]
-        ),
-        el('div', { class: 'habit__name' }, [
-          document.createTextNode(habit.name),
-          el('small', { text: `${weekCount}/${habit.target_per_week} this week` }),
-        ]),
-        el('div', { class: 'habit__week', 'aria-hidden': 'true' }, pips),
-        el(
-          'button',
-          {
-            class: 'btn btn--ghost btn--danger',
-            type: 'button',
-            'aria-label': `Delete ${habit.name}`,
-            'data-delete-habit': habit.id,
-            text: '×',
-          }
-        ),
-      ]);
-    });
-
-    list.replaceChildren(...nodes);
-
-    const { done, total } = completionOn(today);
-    $('today-progress').textContent = `${done} of ${total} done`;
+  if (state.pin.length === 4) {
+    const pin = state.pin;
+    const user = state.loginUser;
+    state.busy = true;
+    api("/api/session", { method: "POST", body: { user_id: user.id, pin } })
+      .then(async () => {
+        state.busy = false;
+        state.pin = "";
+        await loadApp();
+        toast(`Welcome back, ${user.name}`);
+      })
+      .catch((error) => {
+        state.busy = false;
+        state.pin = "";
+        state.pinError = error.message;
+        render();
+      });
   }
+}
 
-  function renderHeatmap() {
-    const container = $('heatmap');
-    const today = store.config.today;
-    const start = weekStart(shiftIso(today, -(HEATMAP_WEEKS - 1) * 7));
-    const cells = [];
+// ───────────────────────────────────────────────────────────── dashboard
 
-    for (let i = 0; i < HEATMAP_WEEKS * 7; i += 1) {
-      const iso = shiftIso(start, i);
-      const { done, total, ratio } = completionOn(iso);
-      const level = ratio === 0 ? 0 : Math.min(4, Math.ceil(ratio * 4));
-      cells.push(
-        el('span', {
-          class: 'heatmap__cell',
-          'data-level': String(level),
-          'data-future': iso > today ? '1' : null,
-          title: `${formatShortDate(iso)} — ${done}/${total}`,
-        })
-      );
-    }
+function screenHome() {
+  const d = data();
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 
-    container.replaceChildren(...cells);
-  }
+  const dashCounters = d.counters.filter((c) => c.on_dash).slice(0, 3);
+  const weights = metricSeries("weight");
+  const last = weights[weights.length - 1];
+  const prev = weights[weights.length - 2];
+  const counts = weekCounts();
+  const goal = d.settings.weekly_gym_goal;
+  const pinned = d.affirmations.find((a) => a.pinned) || d.affirmations[0];
+  const lastWorkout = d.workouts[0];
+  const habitsDone = d.habits.filter((h) => h.done).length;
 
-  function renderGoals() {
-    const list = $('goals');
-    if (!store.goals.length) {
-      list.replaceChildren(el('li', { class: 'empty', text: 'No goals yet. What are you working towards?' }));
-      return;
-    }
+  const children = [
+    el("div", { class: "dash-head" }, [
+      el("div", {}, [
+        el("div", { class: "date", text: fmtLong(d.today) }),
+        el("div", { class: "greet", text: `${greeting}, ${d.me.name}` }),
+      ]),
+      el("button", {
+        class: "avatar-btn", type: "button", title: "Log out",
+        "aria-label": "Log out", text: d.me.initials,
+        onclick: () => guard(async () => {
+          await api("/api/session", { method: "DELETE" });
+          state.data = null;
+          state.tab = "home";
+          state.sub = null;
+          await loadSession();
+        }),
+      }),
+    ]),
 
-    const nodes = store.goals.map((goal) => {
-      const ratio = goal.target > 0 ? Math.min(1, goal.current / goal.target) : 0;
-      const percent = Math.round(ratio * 100);
+    el("div", { class: "row-between", style: "align-items:baseline;margin:0 4px 8px" }, [
+      el("span", { class: "section-label", text: "Days since" }),
+      el("button", {
+        style: "color:var(--color-accent-300);font-size:12px;padding:6px",
+        type: "button", text: "Manage",
+        onclick: () => { state.sub = "counters"; render(); },
+      }),
+    ]),
+  ];
 
-      let dueNode = null;
-      if (goal.due) {
-        const left = daysUntil(goal.due);
-        const tone = left < 0 ? ' goal__due--past' : left <= 7 ? ' goal__due--soon' : '';
-        const label =
-          left < 0 ? `${Math.abs(left)}d overdue` : left === 0 ? 'Due today' : `${left}d left`;
-        dueNode = el('span', { class: `goal__due${tone}`, text: `${label} · ${formatShortDate(goal.due)}` });
-      }
-
-      return el('li', { class: `goal${goal.done ? ' goal--done' : ''}` }, [
-        el('div', { class: 'goal__top' }, [
-          el('span', { class: 'goal__title', text: goal.title }),
-          el('span', {
-            class: 'goal__count numeric',
-            text: `${trim(goal.current)} / ${trim(goal.target)}${goal.unit ? ` ${goal.unit}` : ''}`,
-          }),
-        ]),
-        goal.notes ? el('p', { class: 'goal__notes', text: goal.notes }) : null,
-        el('div', { class: 'meter', role: 'progressbar', 'aria-valuenow': String(percent), 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': `${goal.title} progress` }, [
-          el('div', { class: 'meter__fill', style: `width:${percent}%` }),
-        ]),
-        el('div', { class: 'goal__foot' }, [
-          dueNode || el('span', { class: 'goal__due', text: `${percent}% complete` }),
-          el('button', { class: 'btn btn--ghost', type: 'button', 'data-goal-step': goal.id, 'data-step': '-1', text: '−' }),
-          el('button', { class: 'btn btn--ghost', type: 'button', 'data-goal-step': goal.id, 'data-step': '1', text: '+' }),
-          el('button', {
-            class: 'btn btn--ghost',
-            type: 'button',
-            'data-goal-done': goal.id,
-            text: goal.done ? 'Reopen' : 'Complete',
-          }),
-          el('button', { class: 'btn btn--ghost btn--danger', type: 'button', 'data-delete-goal': goal.id, text: '×', 'aria-label': `Delete ${goal.title}` }),
-        ]),
-      ]);
-    });
-
-    list.replaceChildren(...nodes);
-  }
-
-  function trim(value) {
-    return Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
-  }
-
-  function renderScales() {
-    for (const group of document.querySelectorAll('[data-scale]')) {
-      const name = group.dataset.scale;
-      const dots = [];
-      for (let i = 1; i <= 5; i += 1) {
-        dots.push(
-          el('button', {
-            class: 'scale__dot',
-            type: 'button',
-            role: 'radio',
-            'aria-checked': String(store.draft[name] === i),
-            'aria-label': `${name} ${i} of 5`,
-            'data-scale-set': name,
-            'data-value': String(i),
-            text: String(i),
-          })
-        );
-      }
-      group.replaceChildren(...dots);
-    }
-  }
-
-  function renderEntries() {
-    const list = $('entries');
-    if (!store.journal.length) {
-      list.replaceChildren(el('li', { class: 'empty', text: 'Nothing written down yet.' }));
-      return;
-    }
-
-    const nodes = store.journal.slice(0, 20).map((entry) =>
-      el('li', { class: 'entry' }, [
-        el('div', { class: 'entry__head' }, [
-          el('span', { class: 'entry__date', text: formatShortDate(entry.date) }),
-          el('span', { text: `mood ${entry.mood}/5` }),
-          el('span', { text: `energy ${entry.energy}/5` }),
-          el('button', {
-            class: 'btn btn--ghost btn--danger',
-            type: 'button',
-            style: 'margin-left:auto',
-            'data-delete-entry': entry.id,
-            text: '×',
-            'aria-label': 'Delete entry',
-          }),
-        ]),
-        entry.text ? el('p', { class: 'entry__text', text: entry.text }) : null,
+  if (dashCounters.length) {
+    children.push(
+      el("div", { class: "counter-grid" },
+        dashCounters.map((counter) =>
+          el("div", { class: "card counter-card" }, [
+            icon(counter.icon),
+            el("div", { class: "days", text: String(counter.days) }),
+            el("div", { class: "name", text: counter.name }),
+          ])
+        )
+      )
+    );
+  } else {
+    children.push(
+      el("div", { class: "card", style: "padding:16px;margin-bottom:14px" }, [
+        el("div", { class: "empty", text: "No counters pinned yet — tap Manage to add one." }),
       ])
     );
-
-    list.replaceChildren(...nodes);
   }
 
-  function renderAll() {
-    renderMasthead();
-    renderStats();
-    renderHabits();
-    renderHeatmap();
-    renderGoals();
-    renderEntries();
+  // Weight
+  const weightCard = el("button", {
+    class: "card weight-card", type: "button", style: "text-align:left;width:100%",
+    onclick: () => { state.tab = "weight"; state.sub = null; render(); },
+  }, [
+    el("div", { class: "top" }, [
+      el("div", {}, [
+        el("div", { class: "section-label", text: "Weight" }),
+        last
+          ? el("div", { class: "weight-value" }, [
+              el("span", { class: "big", text: last.weight.toFixed(1) }),
+              el("span", { class: "unit", text: "kg" }),
+              prev ? el("span", { class: "tag tag-accent", text: delta(last.weight, prev.weight, "kg") }) : null,
+            ])
+          : el("div", { class: "weight-value" }, [el("span", { class: "big", text: "—" })]),
+        el("div", {
+          class: "weight-meta",
+          text: last
+            ? `Updated ${fmtShort(last.date)} · Mi Scale via Home Assistant`
+            : "Connect a scale entity in Settings",
+        }),
+      ]),
+      last ? sparkline(weights.slice(-12).map((s) => s.weight)) : null,
+    ]),
+  ]);
+  children.push(weightCard);
+
+  // Steps + gym streak
+  children.push(
+    el("div", { class: "duo-grid" }, [
+      el("div", { class: "card steps-card" }, [
+        el("div", { class: "section-label", text: "Steps" }),
+        stepsRing(d.steps || 0, d.settings.steps_goal),
+      ]),
+      el("button", {
+        class: "card gym-card", type: "button", style: "text-align:left",
+        onclick: () => { state.tab = "gym"; state.sub = null; render(); },
+      }, [
+        el("div", { class: "section-label", text: "Gym streak" }),
+        el("div", { class: "streak" }, [
+          el("span", { class: "n", text: String(gymStreak(counts)) }),
+          el("span", { class: "u", text: "weeks" }),
+        ]),
+        el("div", { class: "week-bars" },
+          counts.map((count) =>
+            el("i", {
+              class: count >= goal ? "on" : "",
+              style: `height:${Math.max(4, Math.min(22, count * 5))}px`,
+            })
+          )
+        ),
+        el("div", {
+          class: "muted-sm",
+          text: lastWorkout
+            ? `Last: ${lastWorkout.name} · ${fmtSession(lastWorkout.date).split(",")[0]}`
+            : "No sessions synced",
+        }),
+      ]),
+    ])
+  );
+
+  // Pinned affirmation
+  if (pinned) {
+    children.push(
+      el("button", {
+        class: "card card--accent affirm-card", type: "button", style: "text-align:left;width:100%",
+        onclick: () => { state.tab = "affirm"; state.sub = null; render(); },
+      }, [
+        el("div", { class: "row-between" }, [
+          el("span", { class: "section-label", style: "color:var(--color-accent-300)", text: "Pinned affirmation" }),
+          icon("push-pin", { fill: true, size: "14px", cls: "icon" }),
+        ]),
+        el("div", { class: "quote", text: `“${pinned.text}”` }),
+      ])
+    );
   }
 
-  // -------------------------------------------------------------- mutations
+  // Habits
+  children.push(
+    el("div", { class: "card habits-card" }, [
+      el("div", { class: "row-between", style: "margin-bottom:10px" }, [
+        el("span", { class: "section-label", text: "Today's habits" }),
+        el("span", { class: "tag tag-neutral", text: `${habitsDone}/${d.habits.length}` }),
+      ]),
+      d.habits.length
+        ? el("div", { style: "display:flex;flex-direction:column;gap:2px" },
+            d.habits.map((habit) =>
+              el("button", {
+                class: `habit-row${habit.done ? " done" : ""}`,
+                type: "button",
+                "aria-pressed": String(habit.done),
+                onclick: () => toggleHabit(habit),
+              }, [
+                icon(habit.done ? "check-circle" : "circle", { fill: habit.done }),
+                el("span", { text: habit.name }),
+              ])
+            )
+          )
+        : el("div", { class: "empty", text: "No habits yet — add some in Settings." }),
+    ])
+  );
 
-  async function guard(action) {
-    try {
-      await action();
-    } catch (error) {
+  // Journal preview
+  const lastEntry = d.journal[0];
+  children.push(
+    el("button", {
+      class: "card journal-card", type: "button", style: "text-align:left;width:100%",
+      onclick: () => { state.sub = "journal"; render(); },
+    }, [
+      el("div", { class: "row-between" }, [
+        el("span", { class: "section-label", text: "Journal" }),
+        icon("pencil-simple-line", { size: "16px" }),
+      ]),
+      el("div", {
+        class: "preview",
+        text: lastEntry ? lastEntry.text : "No entries yet — tap to write.",
+      }),
+      lastEntry ? el("div", { class: "muted-sm", style: "margin-top:6px", text: fmtShort(lastEntry.date) }) : null,
+    ])
+  );
+
+  return el("div", {}, children);
+}
+
+function toggleHabit(habit) {
+  // Optimistic: the tick should land instantly, then reconcile.
+  habit.done = !habit.done;
+  render();
+  api("/api/habits/" + habit.id + "/toggle", { method: "POST", body: { date: data().today } })
+    .then((payload) => {
+      habit.done = payload.checkin.done;
+      render();
+    })
+    .catch((error) => {
+      habit.done = !habit.done;
       toast(error.message, true);
-    }
+      render();
+    });
+}
+
+// ────────────────────────────────────────────────────────── counters (sub)
+
+function screenCounters() {
+  const d = data();
+  return el("div", {}, [
+    el("div", { style: "display:flex;align-items:center;gap:8px;margin:8px 0 16px" }, [
+      el("button", {
+        class: "btn btn-ghost btn-icon", type: "button", "aria-label": "Back",
+        style: "min-width:44px;min-height:44px",
+        onclick: () => { state.sub = null; render(); },
+      }, [icon("arrow-left", { size: "18px" })]),
+      el("span", { style: "font-family:var(--font-heading);font-size:19px;font-weight:500", text: "Counters" }),
+      el("button", {
+        class: "btn btn-primary", type: "button", style: "margin-left:auto;min-height:40px",
+        onclick: () => openCounterModal(null),
+      }, [icon("plus", { size: "14px" }), document.createTextNode("Add")]),
+    ]),
+    el("div", {
+      style: "font-size:12px;color:var(--color-neutral-400);margin:0 4px 12px",
+      text: "Toggle which counters appear on the dashboard (max 3).",
+    }),
+    d.counters.length
+      ? el("div", { style: "display:flex;flex-direction:column;gap:10px" },
+          d.counters.map((counter) =>
+            el("div", { class: "card counter-row" }, [
+              icon(counter.icon),
+              el("div", { class: "grow" }, [
+                el("div", { class: "t", text: counter.name }),
+                el("div", { class: "muted-sm", text: `${counter.days} days · since ${fmtShort(counter.date)}` }),
+              ]),
+              el("button", {
+                class: `icon-btn${counter.on_dash ? " on" : ""}`, type: "button",
+                title: "Show on dashboard", "aria-label": `Show ${counter.name} on dashboard`,
+                onclick: () => guard(async () => {
+                  await api(`/api/counters/${counter.id}/dash`, { method: "POST" });
+                  await refresh();
+                }),
+              }, [icon("squares-four", { fill: counter.on_dash, size: "20px" })]),
+              el("button", {
+                class: "icon-btn", type: "button", "aria-label": `Edit ${counter.name}`,
+                onclick: () => openCounterModal(counter),
+              }, [icon("pencil-simple", { size: "18px" })]),
+              el("button", {
+                class: "icon-btn", type: "button", "aria-label": `Reset ${counter.name}`,
+                onclick: () => { state.modal = "reset"; state.editId = counter.id; render(); },
+              }, [icon("arrow-counter-clockwise", { size: "18px" })]),
+            ])
+          )
+        )
+      : el("div", { class: "card", style: "padding:16px" }, [el("div", { class: "empty", text: "No counters yet." })]),
+  ]);
+}
+
+function openCounterModal(counter) {
+  state.modal = "counter";
+  state.editId = counter ? counter.id : null;
+  state.form = counter
+    ? { name: counter.name, date: counter.date, icon: counter.icon, on_dash: !!counter.on_dash }
+    : { name: "", date: toIso(new Date()), icon: "prohibit", on_dash: false };
+  render();
+}
+
+// ─────────────────────────────────────────────────────────── journal (sub)
+
+function screenJournal() {
+  const d = data();
+  return el("div", {}, [
+    el("div", { style: "display:flex;align-items:center;gap:8px;margin:8px 0 16px" }, [
+      el("button", {
+        class: "btn btn-ghost btn-icon", type: "button", "aria-label": "Back",
+        style: "min-width:44px;min-height:44px",
+        onclick: () => { state.sub = null; render(); },
+      }, [icon("arrow-left", { size: "18px" })]),
+      el("span", { style: "font-family:var(--font-heading);font-size:19px;font-weight:500", text: "Journal" }),
+    ]),
+    el("form", {
+      class: "card", style: "padding:14px;margin-bottom:14px",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const field = event.target.elements.text;
+        const text = field.value.trim();
+        if (!text) return;
+        guard(async () => {
+          await api("/api/journal", { method: "POST", body: { text, date: d.today } });
+          field.value = "";
+          await refresh();
+        }, "Entry saved");
+      },
+    }, [
+      el("textarea", {
+        class: "input", name: "text", rows: "3", maxlength: "8000",
+        placeholder: "What's on your mind?", "aria-label": "Journal entry",
+      }),
+      el("div", { style: "display:flex;justify-content:flex-end;margin-top:10px" }, [
+        el("button", { class: "btn btn-primary", type: "submit", style: "min-height:40px", text: "Save entry" }),
+      ]),
+    ]),
+    d.journal.length
+      ? el("div", { style: "display:flex;flex-direction:column;gap:10px" },
+          d.journal.map((entry) =>
+            el("div", { class: "card", style: "padding:14px 16px" }, [
+              el("div", { class: "row-between" }, [
+                el("span", { class: "muted-sm", text: fmtShort(entry.date) }),
+                el("button", {
+                  class: "icon-btn", type: "button", "aria-label": "Delete entry",
+                  onclick: () => guard(async () => {
+                    await api(`/api/journal/${entry.id}`, { method: "DELETE" });
+                    await refresh();
+                  }),
+                }, [icon("trash-simple", { size: "15px" })]),
+              ]),
+              el("div", { style: "font-size:13px;color:var(--color-neutral-200);line-height:1.5;white-space:pre-wrap", text: entry.text }),
+            ])
+          )
+        )
+      : el("div", { class: "empty", text: "Nothing written down yet." }),
+  ]);
+}
+
+// ────────────────────────────────────────────────────────────────── weight
+
+function screenWeight() {
+  const d = data();
+  const metric = d.metrics.find((m) => m.key === state.metric) || d.metrics[0];
+  const series = metricSeries(metric.key);
+  const values = series.map((s) => s[metric.key]);
+  const last = series[series.length - 1];
+  const prev = series[series.length - 2];
+  const weights = metricSeries("weight");
+  const lastWeight = weights[weights.length - 1];
+
+  const children = [
+    el("div", { class: "screen-head" }, [
+      el("div", { class: "h-title", text: "Body composition" }),
+      el("div", {
+        class: "sub",
+        text: lastWeight
+          ? `Mi Scale via Home Assistant · synced ${fmtShort(lastWeight.date)}`
+          : "Mi Scale via Home Assistant · not connected",
+      }),
+    ]),
+
+    el("div", { class: "card", style: "padding:16px;margin-bottom:14px" }, [
+      el("div", { class: "chips" },
+        d.metrics.map((m) =>
+          el("button", {
+            class: `chip${m.key === state.metric ? " on" : ""}`, type: "button", text: m.label,
+            onclick: () => { state.metric = m.key; render(); },
+          })
+        )
+      ),
+      el("div", { class: "metric-value" }, [
+        el("span", { class: "big", text: last ? last[metric.key].toFixed(1) : "—" }),
+        el("span", { class: "unit", text: metric.unit }),
+        last && prev
+          ? el("span", { class: "tag tag-accent", text: delta(last[metric.key], prev[metric.key], metric.unit) })
+          : null,
+      ]),
+      metricChart(values),
+      series.length > 1
+        ? el("div", { class: "chart-axis" }, [
+            el("span", { text: fmtShort(series[0].date) }),
+            el("span", { text: fmtShort(last.date) }),
+          ])
+        : null,
+    ]),
+  ];
+
+  if (last) {
+    children.push(
+      el("div", { class: "metric-grid" },
+        d.metrics.map((m) =>
+          el("div", { class: "card metric-tile" }, [
+            el("div", { class: "l", text: m.label }),
+            el("div", { class: "v" }, [
+              el("span", { text: last[m.key] !== null && last[m.key] !== undefined ? last[m.key].toFixed(1) : "—" }),
+              el("span", { text: m.unit }),
+            ]),
+          ])
+        )
+      )
+    );
   }
 
-  async function toggleHabit(habitId) {
-    const iso = store.config.today;
-    const days = new Set(store.checkins[habitId] || []);
-    const wasDone = days.has(iso);
+  const rows = weights.slice().reverse();
+  children.push(el("div", { class: "section-label", style: "margin:0 4px 8px", text: "History" }));
+  children.push(
+    rows.length
+      ? el("div", { class: "card list-card" },
+          rows.slice(0, 30).map((sample, index, arr) => {
+            const before = arr[index + 1];
+            const diff = before ? sample.weight - before.weight : null;
+            return el("div", { class: "list-row" }, [
+              el("span", { class: "d", text: fmtShort(sample.date) }),
+              el("span", { class: "w" }, [
+                el("b", { text: `${sample.weight.toFixed(1)} kg` }),
+                el("em", {
+                  class: diff !== null && diff <= 0 ? "down" : "",
+                  text: diff === null ? "—" : `${diff > 0 ? "+" : ""}${diff.toFixed(1)}`,
+                }),
+              ]),
+            ]);
+          })
+        )
+      : el("div", { class: "card", style: "padding:16px" }, [
+          el("div", { class: "empty", text: "No readings yet. Map your scale entities in Settings." }),
+          el("div", { style: "display:flex;justify-content:center;padding-bottom:8px" }, [
+            el("button", {
+              class: "btn btn-secondary", type: "button", style: "min-height:40px", text: "Import history from Home Assistant",
+              onclick: () => guard(async () => {
+                const result = await api("/api/sync/backfill", { method: "POST" });
+                await refresh();
+                toast(`Imported ${result.samples} readings`);
+              }),
+            }),
+          ]),
+        ])
+  );
 
-    // Optimistic: the check should feel instant, then reconcile.
-    wasDone ? days.delete(iso) : days.add(iso);
-    store.checkins[habitId] = [...days].sort();
-    renderAll();
+  return el("div", {}, children);
+}
 
-    try {
-      const result = await request(`/api/habits/${habitId}/toggle`, {
-        method: 'POST',
-        body: { date: iso },
-      });
-      const confirmed = new Set(store.checkins[habitId] || []);
-      result.done ? confirmed.add(iso) : confirmed.delete(iso);
-      store.checkins[habitId] = [...confirmed].sort();
-    } catch (error) {
-      const reverted = new Set(store.checkins[habitId] || []);
-      wasDone ? reverted.add(iso) : reverted.delete(iso);
-      store.checkins[habitId] = [...reverted].sort();
-      toast(error.message, true);
-    }
-    renderAll();
+// ───────────────────────────────────────────────────────────────────── gym
+
+function screenGym() {
+  const d = data();
+  const counts = weekCounts();
+  const goal = d.settings.weekly_gym_goal;
+  const streak = gymStreak(counts);
+  const last = d.workouts[0];
+
+  const children = [
+    el("div", { class: "screen-head" }, [
+      el("div", { class: "h-title", text: "Gym" }),
+      el("div", { class: "sub", text: `Synced from Hevy · goal ${goal} sessions / week` }),
+    ]),
+    el("div", { class: "card streak-card" }, [
+      el("div", { class: "row-between" }, [
+        el("div", {}, [
+          el("div", { class: "section-label", text: "Week streak" }),
+          el("div", { style: "display:flex;align-items:baseline;gap:6px;margin-top:4px" }, [
+            el("span", { class: "big", text: String(streak) }),
+            el("span", { style: "font-size:13px;color:var(--color-neutral-400)", text: `weeks ≥ ${goal}` }),
+          ]),
+        ]),
+        icon("flame", { fill: true, cls: "icon flame" }),
+      ]),
+      el("div", { class: "week-bars-big" },
+        counts.map((count, index) =>
+          el("div", {}, [
+            el("div", {
+              class: `bar${count >= goal ? " on" : ""}`,
+              style: `height:${Math.max(6, Math.min(48, count * 11))}px`,
+              title: `${count} session${count === 1 ? "" : "s"}`,
+            }),
+            el("span", { class: "lbl", text: index === counts.length - 1 ? "now" : `${counts.length - 1 - index}w` }),
+          ])
+        )
+      ),
+    ]),
+  ];
+
+  if (last) {
+    children.push(
+      el("div", { class: "card card--accent", style: "padding:16px;margin-bottom:14px" }, [
+        el("div", { class: "section-label", style: "color:var(--color-accent-300);margin-bottom:8px", text: "Last session" }),
+        el("div", { style: "font-size:16px;font-weight:500", text: last.name }),
+        el("div", { class: "session-stats" }, [
+          statBlock("Date", fmtSession(last.date)),
+          statBlock("Volume", `${last.volume_kg.toLocaleString()} kg`),
+          statBlock("Duration", formatDuration(last.duration_min)),
+          statBlock("Exercises", String(last.exercises)),
+        ]),
+      ])
+    );
+    children.push(el("div", { class: "section-label", style: "margin:0 4px 8px", text: "Recent sessions" }));
+    children.push(
+      el("div", { style: "display:flex;flex-direction:column;gap:10px" },
+        d.workouts.slice(0, 12).map((workout) =>
+          el("div", { class: "card session-row" }, [
+            el("div", { style: "min-width:0" }, [
+              el("div", { class: "n", text: workout.name }),
+              el("div", {
+                class: "muted-sm", style: "margin-top:2px",
+                text: `${fmtSession(workout.date)} · ${formatDuration(workout.duration_min)} · ${workout.exercises} exercises`,
+              }),
+            ]),
+            el("span", { class: "tag tag-neutral", style: "flex:none", text: `${workout.volume_kg.toLocaleString()} kg` }),
+          ])
+        )
+      )
+    );
+  } else {
+    children.push(
+      el("div", { class: "card", style: "padding:16px" }, [
+        el("div", { class: "empty", text: "No sessions yet. Add your Hevy API key in Settings." }),
+      ])
+    );
   }
 
-  async function refreshSensors() {
-    if (!store.config.sensors.length) return;
-    try {
-      const payload = await request('/api/sensors');
-      store.sensors = payload.sensors || [];
-      renderStats();
-    } catch {
-      // A transient core hiccup should not disturb the page.
-    }
+  return el("div", {}, children);
+}
+
+function statBlock(label, value) {
+  return el("div", {}, [el("div", { class: "k", text: label }), el("div", { class: "v", text: value })]);
+}
+
+function formatDuration(minutes) {
+  if (!minutes) return "—";
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return hours ? `${hours}h ${pad(rest)}m` : `${rest}m`;
+}
+
+// ────────────────────────────────────────────────────────────────── affirm
+
+function screenAffirm() {
+  const d = data();
+  const reminder = d.settings.reminder;
+
+  return el("div", {}, [
+    el("div", { class: "row-between", style: "margin:8px 4px 16px" }, [
+      el("div", { class: "h-title", text: "Affirmations" }),
+      el("button", {
+        class: "btn btn-primary", type: "button", style: "min-height:40px",
+        onclick: () => {
+          state.modal = "affirm";
+          state.editId = null;
+          state.form = { text: "" };
+          render();
+        },
+      }, [icon("plus", { size: "14px" }), document.createTextNode("Add")]),
+    ]),
+
+    el("div", { class: "card", style: "padding:14px 16px;margin-bottom:14px" }, [
+      el("div", { class: "row-between", style: "gap:10px" }, [
+        el("div", { style: "display:flex;align-items:center;gap:10px;min-width:0" }, [
+          icon("bell", { size: "18px", cls: "icon" }),
+          el("div", { style: "min-width:0" }, [
+            el("div", { style: "font-size:13px;font-weight:500", text: "Daily read reminder" }),
+            el("div", { class: "muted-sm", text: "Sent via Telegram bot" }),
+          ]),
+        ]),
+        el("div", { style: "display:flex;align-items:center;gap:10px;flex:none" }, [
+          el("input", {
+            class: "input time-input", type: "time", value: reminder.time,
+            "aria-label": "Reminder time",
+            onchange: (event) => saveSettings({ reminder: { ...reminder, time: event.target.value } }),
+          }),
+          el("button", {
+            class: `switch${reminder.on ? " on" : ""}`, type: "button",
+            role: "switch", "aria-checked": String(reminder.on), "aria-label": "Daily reminder",
+            onclick: () => {
+              const next = !reminder.on;
+              saveSettings({ reminder: { ...reminder, on: next } },
+                next ? `Reminder on — daily at ${reminder.time}` : "Reminder off");
+            },
+          }, [el("span", {})]),
+        ]),
+      ]),
+    ]),
+
+    d.affirmations.length
+      ? el("div", { style: "display:flex;flex-direction:column;gap:10px" },
+          d.affirmations.map((item) =>
+            el("div", { class: `card affirm-item${item.pinned ? " card--accent" : ""}` }, [
+              item.pinned ? el("div", { class: "pinned-label", text: "Pinned · shown on dashboard" }) : null,
+              el("div", { class: "text", text: item.text }),
+              el("div", { class: "acts" }, [
+                el("button", {
+                  class: `icon-btn${item.pinned ? " on" : ""}`, type: "button",
+                  "aria-label": `Pin ${item.text.slice(0, 24)}`,
+                  onclick: () => guard(async () => {
+                    await api(`/api/affirmations/${item.id}/pin`, { method: "POST" });
+                    await refresh();
+                  }, "Pinned to dashboard"),
+                }, [icon("push-pin", { fill: item.pinned })]),
+                el("button", {
+                  class: "icon-btn", type: "button", "aria-label": "Edit affirmation",
+                  onclick: () => {
+                    state.modal = "affirm";
+                    state.editId = item.id;
+                    state.form = { text: item.text };
+                    render();
+                  },
+                }, [icon("pencil-simple")]),
+                el("button", {
+                  class: "icon-btn", type: "button", "aria-label": "Delete affirmation",
+                  onclick: () => guard(async () => {
+                    await api(`/api/affirmations/${item.id}`, { method: "DELETE" });
+                    await refresh();
+                  }),
+                }, [icon("trash-simple")]),
+              ]),
+            ])
+          )
+        )
+      : el("div", { class: "card", style: "padding:16px" }, [
+          el("div", { class: "empty", text: "No affirmations yet." }),
+        ]),
+  ]);
+}
+
+// ──────────────────────────────────────────────────────────────── settings
+
+function screenSettings() {
+  const d = data();
+  const s = d.settings;
+
+  const section = (label) => el("div", { class: "section-label", style: "margin:0 4px 8px", text: label });
+
+  return el("div", {}, [
+    el("div", { class: "h-title", style: "margin:8px 4px 16px", text: "Settings" }),
+
+    // ── goals
+    section("Goals"),
+    el("div", { class: "card stack-card" }, [
+      el("label", { class: "field" }, [
+        el("span", { text: "Daily step goal" }),
+        el("input", {
+          class: "input", type: "number", min: "1000", max: "60000", step: "500", value: String(s.steps_goal),
+          onchange: (event) => saveSettings({ steps_goal: Number(event.target.value) }),
+        }),
+      ]),
+      el("label", { class: "field" }, [
+        el("span", { text: "Gym sessions per week" }),
+        el("input", {
+          class: "input", type: "number", min: "1", max: "7", value: String(s.weekly_gym_goal),
+          onchange: (event) => saveSettings({ weekly_gym_goal: Number(event.target.value) }),
+        }),
+      ]),
+    ]),
+
+    // ── telegram
+    section("Telegram bot"),
+    el("form", {
+      class: "card stack-card",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const form = new FormData(event.target);
+        guard(async () => {
+          const result = await api("/api/telegram", {
+            method: "PUT",
+            body: { token: form.get("token"), default_chat: form.get("default_chat") },
+          });
+          await refresh();
+          toast(result.bot.ok ? `Connected to @${result.bot.detail}` : result.bot.detail || "Saved", !result.bot.ok);
+        });
+      },
+    }, [
+      el("label", { class: "field" }, [
+        el("span", { text: "Bot token" }),
+        el("input", {
+          class: "input", name: "token", type: "password", autocomplete: "off",
+          placeholder: d.telegram.configured ? "•••••••• (saved — type to replace)" : "123456:ABC-...",
+        }),
+      ]),
+      el("label", { class: "field" }, [
+        el("span", { text: "Default chat ID" }),
+        el("input", { class: "input", name: "default_chat", value: d.telegram.default_chat, placeholder: "-100...", autocomplete: "off" }),
+      ]),
+      el("div", { class: "row-between" }, [
+        d.telegram.configured
+          ? el("span", { class: "tag tag-accent" }, [
+              icon("plugs-connected", { fill: true, size: "12px", cls: "icon" }),
+              el("span", { style: "margin-left:4px", text: "Connected" }),
+            ])
+          : el("span", { class: "tag tag-neutral", text: "Not configured" }),
+        el("div", { style: "display:flex;gap:8px" }, [
+          el("button", { class: "btn btn-primary", type: "submit", style: "min-height:40px", text: "Save" }),
+          el("button", {
+            class: "btn btn-secondary", type: "button", style: "min-height:40px", text: "Send test",
+            onclick: () => guard(async () => {
+              await api("/api/telegram/test", { method: "POST" });
+            }, "Test message sent"),
+          }),
+        ]),
+      ]),
+      el("label", { class: "field" }, [
+        el("span", { text: "My chat ID (overrides default for my reminders)" }),
+        el("input", {
+          class: "input", value: s.telegram_chat_id, placeholder: "Approve yourself below to fill this",
+          onchange: (event) => saveSettings({ telegram_chat_id: event.target.value }),
+        }),
+      ]),
+    ]),
+
+    // ── bot users
+    section("Bot users"),
+    el("div", { class: "card rows-card" },
+      d.bot_users.length
+        ? d.bot_users.map((user) =>
+            el("div", { class: "srow" }, [
+              el("div", { class: "avatar avatar--sm avatar--neutral", text: (user.name || "?")[0].toUpperCase() }),
+              el("div", { class: "grow" }, [
+                el("div", { class: "t", text: user.handle ? `${user.name} · ${user.handle}` : user.name }),
+                el("div", { class: "s", text: `chat ${user.chat_id}` }),
+              ]),
+              user.status === "pending"
+                ? el("div", { style: "display:flex;gap:6px;flex:none" }, [
+                    el("button", {
+                      class: "btn btn-primary", type: "button", style: "min-height:36px;padding:6px 12px;font-size:12px",
+                      text: "Approve",
+                      onclick: () => guard(async () => {
+                        await api(`/api/bot-users/${user.id}/approve`, { method: "POST" });
+                        await refresh();
+                      }, `${user.handle || user.name} approved`),
+                    }),
+                    el("button", {
+                      class: "btn btn-ghost", type: "button", style: "min-height:36px;padding:6px 10px;font-size:12px",
+                      text: "Decline",
+                      onclick: () => removeBotUser(user),
+                    }),
+                  ])
+                : el("div", { style: "display:flex;gap:6px;align-items:center;flex:none" }, [
+                    el("button", {
+                      class: "tag tag-accent", type: "button", title: "Use as my chat ID", text: "Approved",
+                      onclick: () => saveSettings({ telegram_chat_id: user.chat_id }, "Set as my chat ID"),
+                    }),
+                    el("button", {
+                      class: "icon-btn", type: "button", "aria-label": `Remove ${user.name}`,
+                      onclick: () => removeBotUser(user),
+                    }, [icon("x", { size: "15px" })]),
+                  ]),
+            ])
+          )
+        : [el("div", { class: "empty", text: "Nobody has messaged the bot yet. Send it /start, then refresh." })]
+    ),
+
+    // ── data sources
+    section("Data sources"),
+    el("div", { class: "card rows-card" }, [
+      el("div", { class: "srow" }, [
+        icon("house-line", { cls: `icon${d.integrations.ha_available ? "" : " off"}` }),
+        el("div", { class: "grow" }, [
+          el("div", { class: "t", text: "Home Assistant" }),
+          el("div", { class: "s", text: s.entities.weight || "Mi Body Composition Scale · not mapped" }),
+        ]),
+        el("span", {
+          class: d.integrations.ha_available && s.entities.weight ? "tag tag-accent" : "tag tag-neutral",
+          text: d.integrations.ha_available ? (s.entities.weight ? "Connected" : "Set up") : "No API",
+        }),
+      ]),
+      el("div", { class: "srow" }, [
+        icon("barbell", { cls: `icon${s.hevy_configured ? "" : " off"}` }),
+        el("div", { class: "grow" }, [
+          el("div", { class: "t", text: "Hevy" }),
+          el("div", { class: "s", text: d.gym_synced_at ? `API key · last sync ${new Date(d.gym_synced_at).toLocaleString()}` : "API key · syncs hourly" }),
+        ]),
+        el("span", { class: s.hevy_configured ? "tag tag-accent" : "tag tag-neutral", text: s.hevy_configured ? "Connected" : "Not set" }),
+      ]),
+      el("div", { class: "srow" }, [
+        icon("heartbeat", { cls: "icon off" }),
+        el("div", { class: "grow" }, [
+          el("div", { class: "t", text: "Apple Health" }),
+          el("div", { class: "s", text: "No direct API — use Health Auto Export → webhook" }),
+        ]),
+        el("button", {
+          class: "btn btn-ghost", type: "button", style: "min-height:36px;padding:6px 10px;font-size:12px",
+          text: "Set up",
+          onclick: () => { state.modal = "health"; render(); },
+        }),
+      ]),
+    ]),
+
+    // ── entity mapping
+    section("Home Assistant entities"),
+    el("form", {
+      class: "card stack-card",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const form = new FormData(event.target);
+        const entities = {};
+        for (const [key, value] of form.entries()) entities[key] = value;
+        guard(async () => {
+          await saveSettingsRaw({ entities });
+          const result = await api("/api/sync/backfill", { method: "POST" });
+          await refresh();
+          toast(`Saved · imported ${result.samples} readings`);
+        });
+      },
+    }, [
+      ...d.metrics.map((m) =>
+        el("label", { class: "field" }, [
+          el("span", { text: `${m.label} entity` }),
+          el("input", {
+            class: "input", name: m.key, value: s.entities[m.key] || "",
+            placeholder: `sensor.mi_scale_${m.key}`, autocomplete: "off", spellcheck: "false",
+          }),
+        ])
+      ),
+      el("label", { class: "field" }, [
+        el("span", { text: "Steps entity" }),
+        el("input", {
+          class: "input", name: "steps", value: s.entities.steps || "",
+          placeholder: "sensor.phone_steps", autocomplete: "off", spellcheck: "false",
+        }),
+      ]),
+      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:44px", text: "Save & import history" }),
+    ]),
+
+    // ── hevy key
+    section("Hevy"),
+    el("form", {
+      class: "card stack-card",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const key = new FormData(event.target).get("hevy_key");
+        guard(async () => {
+          await saveSettingsRaw({ hevy_key: key });
+          const result = await api("/api/sync/hevy", { method: "POST" });
+          await refresh();
+          toast(`Synced ${result.synced} workouts`);
+        });
+      },
+    }, [
+      el("label", { class: "field" }, [
+        el("span", { text: "API key" }),
+        el("input", {
+          class: "input", name: "hevy_key", type: "password", autocomplete: "off",
+          placeholder: s.hevy_configured ? "•••••••• (saved — type to replace)" : "From hevy.com → Settings → Developer",
+        }),
+      ]),
+      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:44px", text: "Save & sync" }),
+    ]),
+
+    // ── habits
+    section("Habits"),
+    el("div", { class: "card rows-card" }, [
+      ...d.habits.map((habit) =>
+        el("div", { class: "srow" }, [
+          el("div", { class: "grow" }, [el("div", { class: "t", text: habit.name })]),
+          el("button", {
+            class: "icon-btn", type: "button", "aria-label": `Delete ${habit.name}`,
+            onclick: () => guard(async () => {
+              await api(`/api/habits/${habit.id}`, { method: "DELETE" });
+              await refresh();
+            }),
+          }, [icon("trash-simple", { size: "16px" })]),
+        ])
+      ),
+      el("form", {
+        style: "display:flex;gap:8px;padding:10px 0",
+        onsubmit: (event) => {
+          event.preventDefault();
+          const field = event.target.elements.name;
+          if (!field.value.trim()) return;
+          guard(async () => {
+            await api("/api/habits", { method: "POST", body: { name: field.value } });
+            field.value = "";
+            await refresh();
+          }, "Habit added");
+        },
+      }, [
+        el("input", { class: "input", name: "name", placeholder: "New habit", maxlength: "80", "aria-label": "New habit" }),
+        el("button", { class: "btn btn-primary", type: "submit", style: "min-height:36px", text: "Add" }),
+      ]),
+    ]),
+
+    // ── household
+    section("Household"),
+    el("div", { class: "card rows-card" }, [
+      ...d.household.map((member) =>
+        el("div", { class: "srow" }, [
+          el("div", { class: "avatar avatar--sm", text: member.initials }),
+          el("div", { class: "grow" }, [
+            el("div", { class: "t", text: member.name }),
+            el("div", { class: "s", text: member.meta }),
+          ]),
+          member.active
+            ? el("span", { class: "tag tag-outline", style: "flex:none", text: "Active" })
+            : el("button", {
+                class: "icon-btn", type: "button", "aria-label": `Remove ${member.name}`,
+                onclick: () => guard(async () => {
+                  if (!window.confirm(`Remove ${member.name} and all their data?`)) return;
+                  await api(`/api/household/${member.id}`, { method: "DELETE" });
+                  await refresh();
+                }),
+              }, [icon("x", { size: "15px" })]),
+        ])
+      ),
+      el("div", { style: "padding:10px 0" }, [
+        el("button", {
+          style: "color:var(--color-accent-300);font-size:13px;padding:6px 0;display:flex;align-items:center;gap:6px",
+          type: "button",
+          onclick: () => { state.modal = "member"; state.form = { name: "", pin: "" }; render(); },
+        }, [icon("plus-circle", { size: "16px" }), document.createTextNode("Add member")]),
+      ]),
+    ]),
+
+    // ── security
+    section("Security"),
+    el("form", {
+      class: "card stack-card",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const pin = new FormData(event.target).get("pin");
+        guard(async () => {
+          await api(`/api/household/${d.me.id}`, { method: "PUT", body: { pin } });
+          event.target.reset();
+        }, "PIN changed");
+      },
+    }, [
+      el("label", { class: "field" }, [
+        el("span", { text: "Change my PIN" }),
+        el("input", {
+          class: "input", name: "pin", inputmode: "numeric", pattern: "\\d{4}", maxlength: "4",
+          required: true, placeholder: "4 digits", autocomplete: "new-password",
+        }),
+      ]),
+      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:44px", text: "Update PIN" }),
+    ]),
+
+    el("div", { class: "muted-sm", style: "text-align:center;padding:8px 0 4px", text: `Momentum ${d.version}` }),
+  ]);
+}
+
+function removeBotUser(user) {
+  guard(async () => {
+    await api(`/api/bot-users/${user.id}`, { method: "DELETE" });
+    await refresh();
+  }, `${user.handle || user.name} removed`);
+}
+
+function saveSettings(patch, message) {
+  guard(async () => {
+    await saveSettingsRaw(patch);
+    await refresh();
+  }, message);
+}
+
+async function saveSettingsRaw(patch) {
+  await api("/api/settings", { method: "PUT", body: patch });
+}
+
+// ────────────────────────────────────────────────────────────────── modals
+
+function renderModal() {
+  if (!state.modal) return null;
+  const close = () => { state.modal = null; state.editId = null; render(); };
+  const backdrop = (inner) =>
+    el("div", {
+      class: "dialog-backdrop",
+      onclick: (event) => { if (event.target === event.currentTarget) close(); },
+    }, [inner]);
+
+  if (state.modal === "counter") {
+    const form = state.form;
+    return backdrop(
+      el("form", {
+        class: "dialog",
+        onsubmit: (event) => {
+          event.preventDefault();
+          if (!form.name.trim()) { toast("Give the counter a name", true); return; }
+          guard(async () => {
+            const path = state.editId ? `/api/counters/${state.editId}` : "/api/counters";
+            await api(path, { method: state.editId ? "PUT" : "POST", body: form });
+            close();
+            await refresh();
+          }, "Counter saved");
+        },
+      }, [
+        el("div", { class: "dialog-title", text: state.editId ? "Edit counter" : "New counter" }),
+        el("label", { class: "field" }, [
+          el("span", { text: "Name" }),
+          el("input", {
+            class: "input", value: form.name, maxlength: "60", placeholder: "e.g. No alcohol", required: true,
+            oninput: (event) => { form.name = event.target.value; },
+          }),
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { text: "Start date" }),
+          el("input", {
+            class: "input", type: "date", value: form.date, max: toIso(new Date()),
+            oninput: (event) => { form.date = event.target.value; },
+          }),
+        ]),
+        el("div", { class: "field" }, [
+          el("span", { text: "Icon" }),
+          el("div", { class: "swatch-row", role: "radiogroup", "aria-label": "Icon" },
+            data().counter_icons.map((name) =>
+              el("button", {
+                class: `swatch${form.icon === name ? " on" : ""}`, type: "button",
+                role: "radio", "aria-checked": String(form.icon === name), "aria-label": name,
+                onclick: () => { form.icon = name; render(); },
+              }, [icon(name)])
+            )
+          ),
+        ]),
+        el("button", {
+          class: `check-row${form.on_dash ? " on" : ""}`, type: "button",
+          "aria-pressed": String(form.on_dash),
+          onclick: () => { form.on_dash = !form.on_dash; render(); },
+        }, [
+          icon(form.on_dash ? "check-square" : "square", { fill: form.on_dash }),
+          el("span", { text: "Show on dashboard" }),
+        ]),
+        el("div", { class: "dialog-actions" }, [
+          el("button", { class: "btn btn-ghost", type: "button", text: "Cancel", onclick: close }),
+          el("button", { class: "btn btn-primary", type: "submit", text: "Save" }),
+        ]),
+      ])
+    );
   }
 
-  // ---------------------------------------------------------------- events
-
-  function openDialog(id) {
-    const dialog = $(id);
-    dialog.querySelector('form').reset();
-    if (id === 'habit-dialog') renderSwatches();
-    dialog.showModal();
-    dialog.querySelector('input')?.focus();
+  if (state.modal === "affirm") {
+    const form = state.form;
+    return backdrop(
+      el("form", {
+        class: "dialog",
+        onsubmit: (event) => {
+          event.preventDefault();
+          if (!form.text.trim()) return;
+          guard(async () => {
+            const path = state.editId ? `/api/affirmations/${state.editId}` : "/api/affirmations";
+            await api(path, { method: state.editId ? "PUT" : "POST", body: { text: form.text } });
+            close();
+            await refresh();
+          }, "Affirmation saved");
+        },
+      }, [
+        el("div", { class: "dialog-title", text: state.editId ? "Edit affirmation" : "New affirmation" }),
+        el("textarea", {
+          class: "input", rows: "4", placeholder: "I am...", maxlength: "500", required: true,
+          "aria-label": "Affirmation",
+          oninput: (event) => { form.text = event.target.value; },
+        }),
+        el("div", { class: "dialog-actions" }, [
+          el("button", { class: "btn btn-ghost", type: "button", text: "Cancel", onclick: close }),
+          el("button", { class: "btn btn-primary", type: "submit", text: "Save" }),
+        ]),
+      ])
+    );
   }
 
-  let pendingColor = COLORS[0];
+  if (state.modal === "reset") {
+    const counter = data().counters.find((c) => c.id === state.editId);
+    if (!counter) return null;
+    return backdrop(
+      el("div", { class: "dialog" }, [
+        el("div", { class: "dialog-title", style: "margin-bottom:0", text: `Reset “${counter.name}”?` }),
+        el("div", {
+          class: "dialog-body",
+          text: `The counter restarts from today. Current streak of ${counter.days} days will be lost.`,
+        }),
+        el("div", { class: "dialog-actions" }, [
+          el("button", { class: "btn btn-ghost", type: "button", text: "Cancel", onclick: close }),
+          el("button", {
+            class: "btn btn-primary", type: "button", text: "Reset to today",
+            onclick: () => guard(async () => {
+              await api(`/api/counters/${counter.id}/reset`, { method: "POST" });
+              close();
+              await refresh();
+            }, "Counter reset to today"),
+          }),
+        ]),
+      ])
+    );
+  }
 
-  function renderSwatches() {
-    const nodes = COLORS.map((name) =>
-      el('button', {
-        class: `swatch color-${name}`,
-        type: 'button',
-        role: 'radio',
-        'aria-checked': String(name === pendingColor),
-        'aria-label': name,
-        'data-color': name,
+  if (state.modal === "member") {
+    const form = state.form;
+    return backdrop(
+      el("form", {
+        class: "dialog",
+        onsubmit: (event) => {
+          event.preventDefault();
+          guard(async () => {
+            await api("/api/household", { method: "POST", body: form });
+            close();
+            await refresh();
+          }, "Member added");
+        },
+      }, [
+        el("div", { class: "dialog-title", text: "Add member" }),
+        el("label", { class: "field" }, [
+          el("span", { text: "Name" }),
+          el("input", {
+            class: "input", maxlength: "40", required: true, autocomplete: "off",
+            oninput: (event) => { form.name = event.target.value; },
+          }),
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { text: "4-digit PIN" }),
+          el("input", {
+            class: "input", inputmode: "numeric", pattern: "\\d{4}", maxlength: "4", required: true,
+            autocomplete: "new-password",
+            oninput: (event) => { form.pin = event.target.value; },
+          }),
+        ]),
+        el("div", { class: "dialog-actions" }, [
+          el("button", { class: "btn btn-ghost", type: "button", text: "Cancel", onclick: close }),
+          el("button", { class: "btn btn-primary", type: "submit", text: "Add" }),
+        ]),
+      ])
+    );
+  }
+
+  if (state.modal === "health") {
+    const path = data().integrations.health_webhook_path;
+    const full = new URL(url(path.replace(/^\//, "")), window.location.href).href;
+    return backdrop(
+      el("div", { class: "dialog" }, [
+        el("div", { class: "dialog-title", text: "Apple Health" }),
+        el("div", { class: "dialog-body" }, [
+          document.createTextNode(
+            "Apple Health has no server API, so the phone has to push. Install "
+          ),
+          el("b", { text: "Health Auto Export" }),
+          document.createTextNode(
+            ", add a REST API automation, set the format to JSON, and point it at this URL:"
+          ),
+        ]),
+        el("input", {
+          class: "input", readonly: true, value: full, "aria-label": "Webhook URL",
+          style: "font-size:12px", onclick: (event) => event.target.select(),
+        }),
+        el("div", { class: "muted-sm", text: "Steps and body-mass metrics are ingested. Keep this URL secret — the key in it is the only credential." }),
+        el("div", { class: "dialog-actions" }, [
+          el("button", { class: "btn btn-primary", type: "button", text: "Done", onclick: close }),
+        ]),
+      ])
+    );
+  }
+  return null;
+}
+
+// ────────────────────────────────────────────────────────────────── render
+
+function tabBar() {
+  return el("nav", { class: "tabbar", "aria-label": "Sections" },
+    TABS.map((tab) =>
+      el("button", {
+        class: `tab${state.tab === tab.key && !state.sub ? " on" : ""}`,
+        type: "button",
+        "aria-current": state.tab === tab.key && !state.sub ? "page" : null,
+        onclick: () => {
+          state.tab = tab.key;
+          state.sub = null;
+          render();
+          $(".scroll")?.scrollTo(0, 0);
+        },
+      }, [icon(tab.icon, { fill: state.tab === tab.key && !state.sub }), el("span", { text: tab.label })])
+    )
+  );
+}
+
+function currentScreen() {
+  if (state.sub === "counters") return screenCounters();
+  if (state.sub === "journal") return screenJournal();
+  switch (state.tab) {
+    case "weight": return screenWeight();
+    case "gym": return screenGym();
+    case "affirm": return screenAffirm();
+    case "settings": return screenSettings();
+    default: return screenHome();
+  }
+}
+
+function render() {
+  const app = $("#app");
+  const scrollTop = $(".scroll")?.scrollTop ?? 0;
+  const children = [];
+
+  if (state.phase === "loading") {
+    children.push(el("div", { class: "empty", style: "margin-top:40vh", text: "Loading…" }));
+  } else if (state.phase === "setup") {
+    children.push(screenSetup());
+  } else if (state.phase === "picking" || state.phase === "pin") {
+    children.push(screenLogin());
+  } else {
+    children.push(el("main", { class: "scroll" }, [currentScreen()]));
+    children.push(tabBar());
+  }
+
+  const modal = renderModal();
+  if (modal) children.push(modal);
+  if (state.toast) {
+    children.push(
+      el("div", {
+        class: `toast${state.toast.isError ? " toast--error" : ""}`,
+        role: "status", "aria-live": "polite", text: state.toast.message,
       })
     );
-    $('habit-colors').replaceChildren(...nodes);
   }
 
-  function wireEvents() {
-    $('add-habit').addEventListener('click', () => {
-      pendingColor = COLORS[store.habits.length % COLORS.length];
-      openDialog('habit-dialog');
-    });
-    $('add-goal').addEventListener('click', () => openDialog('goal-dialog'));
+  app.replaceChildren(...children);
+  app.setAttribute("aria-busy", state.phase === "loading" ? "true" : "false");
+  const scroller = $(".scroll");
+  if (scroller && scrollTop) scroller.scrollTop = scrollTop;
+}
 
-    for (const dialog of document.querySelectorAll('dialog')) {
-      dialog.addEventListener('click', (event) => {
-        if (event.target.matches('[data-close]')) dialog.close();
-      });
+// ──────────────────────────────────────────────────────────────────── boot
+
+async function refresh() {
+  state.data = await api("/api/bootstrap");
+}
+
+async function loadApp() {
+  await refresh();
+  state.phase = "app";
+  render();
+}
+
+async function loadSession() {
+  try {
+    const session = await api("/api/session");
+    if (session.setup_required) {
+      state.phase = "setup";
+    } else if (session.signed_in) {
+      await loadApp();
+      return;
+    } else {
+      state.users = session.users;
+      state.phase = "picking";
     }
-
-    $('habit-colors').addEventListener('click', (event) => {
-      const swatch = event.target.closest('[data-color]');
-      if (!swatch) return;
-      pendingColor = swatch.dataset.color;
-      renderSwatches();
-    });
-
-    $('habit-form').addEventListener('submit', (event) => {
-      const data = new FormData(event.target);
-      const name = String(data.get('name') || '').trim();
-      if (!name) return;
-      guard(async () => {
-        const payload = await request('/api/habits', {
-          method: 'POST',
-          body: {
-            name,
-            color: pendingColor,
-            target_per_week: Number(data.get('target_per_week')),
-          },
-        });
-        store.habits.push(payload.habit);
-        renderAll();
-        toast('Habit added');
-      });
-    });
-
-    $('goal-form').addEventListener('submit', (event) => {
-      const data = new FormData(event.target);
-      const title = String(data.get('title') || '').trim();
-      if (!title) return;
-      guard(async () => {
-        const payload = await request('/api/goals', {
-          method: 'POST',
-          body: {
-            title,
-            current: Number(data.get('current')) || 0,
-            target: Number(data.get('target')) || 100,
-            unit: String(data.get('unit') || ''),
-            due: String(data.get('due') || '') || null,
-            notes: String(data.get('notes') || ''),
-          },
-        });
-        store.goals.push(payload.goal);
-        renderGoals();
-        renderStats();
-        toast('Goal added');
-      });
-    });
-
-    $('journal-form').addEventListener('submit', (event) => {
-      event.preventDefault();
-      const text = $('journal-text').value.trim();
-      guard(async () => {
-        const payload = await request('/api/journal', {
-          method: 'POST',
-          body: {
-            date: store.config.today,
-            text,
-            mood: store.draft.mood,
-            energy: store.draft.energy,
-          },
-        });
-        store.journal.unshift(payload.entry);
-        $('journal-text').value = '';
-        renderEntries();
-        toast('Entry saved');
-      });
-    });
-
-    document.addEventListener('click', (event) => {
-      const target = event.target.closest('[data-toggle], [data-delete-habit], [data-goal-step], [data-goal-done], [data-delete-goal], [data-delete-entry], [data-scale-set]');
-      if (!target) return;
-      const data = target.dataset;
-
-      if (data.toggle) {
-        toggleHabit(data.toggle);
-      } else if (data.deleteHabit) {
-        const habit = store.habits.find((item) => item.id === data.deleteHabit);
-        if (!habit || !window.confirm(`Delete “${habit.name}” and its history?`)) return;
-        guard(async () => {
-          await request(`/api/habits/${habit.id}`, { method: 'DELETE' });
-          store.habits = store.habits.filter((item) => item.id !== habit.id);
-          delete store.checkins[habit.id];
-          renderAll();
-        });
-      } else if (data.goalStep) {
-        const goal = store.goals.find((item) => item.id === data.goalStep);
-        if (!goal) return;
-        const step = Number(data.step) * Math.max(1, Math.round(goal.target / 100));
-        const next = Math.max(0, goal.current + step);
-        guard(async () => {
-          const payload = await request(`/api/goals/${goal.id}`, {
-            method: 'PUT',
-            body: { current: next },
-          });
-          Object.assign(goal, payload.goal);
-          renderGoals();
-        });
-      } else if (data.goalDone) {
-        const goal = store.goals.find((item) => item.id === data.goalDone);
-        if (!goal) return;
-        guard(async () => {
-          const payload = await request(`/api/goals/${goal.id}`, {
-            method: 'PUT',
-            body: { done: !goal.done },
-          });
-          Object.assign(goal, payload.goal);
-          renderGoals();
-          renderStats();
-        });
-      } else if (data.deleteGoal) {
-        guard(async () => {
-          await request(`/api/goals/${data.deleteGoal}`, { method: 'DELETE' });
-          store.goals = store.goals.filter((item) => item.id !== data.deleteGoal);
-          renderGoals();
-          renderStats();
-        });
-      } else if (data.deleteEntry) {
-        guard(async () => {
-          await request(`/api/journal/${data.deleteEntry}`, { method: 'DELETE' });
-          store.journal = store.journal.filter((item) => item.id !== data.deleteEntry);
-          renderEntries();
-        });
-      } else if (data.scaleSet) {
-        store.draft[data.scaleSet] = Number(data.value);
-        renderScales();
-      }
-    });
-
-    // Keep the displayed day honest if the tab is left open overnight.
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) boot(true);
-    });
+  } catch (error) {
+    state.phase = "picking";
+    state.users = [];
+    toast(error.message, true);
   }
+  render();
+}
 
-  // ------------------------------------------------------------------ boot
-
-  async function boot(silent = false) {
-    try {
-      const payload = await request('/api/bootstrap');
-      store.habits = payload.state.habits || [];
-      store.checkins = payload.state.checkins || {};
-      store.goals = payload.state.goals || [];
-      store.journal = payload.state.journal || [];
-      store.config = { ...store.config, ...payload.config };
-      renderAll();
-      $('shell').setAttribute('aria-busy', 'false');
-      refreshSensors();
-    } catch (error) {
-      if (!silent) {
-        $('greeting').textContent = 'Dashboard unavailable';
-        $('today-label').textContent = error.message;
-      }
-      toast(error.message, true);
-    }
+// Coming back to a backgrounded tab should not show a stale "today".
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && state.phase === "app") {
+    refresh().then(render).catch(() => {});
   }
+});
 
-  renderScales();
-  wireEvents();
-  boot();
-  setInterval(refreshSensors, SENSOR_POLL_MS);
-})();
+render();
+loadSession();

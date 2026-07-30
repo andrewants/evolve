@@ -5,7 +5,7 @@ FROM $BUILD_FROM
 # builds without a wheel toolchain on every architecture.
 RUN apk add --no-cache python3
 
-COPY app /opt/evolve
+COPY app /opt/momentum
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 

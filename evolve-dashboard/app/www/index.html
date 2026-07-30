@@ -4,166 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
-    <title>Self Improvement Dashboard</title>
-    <!-- Inlined so the page needs no network beyond its own two assets. -->
+    <meta name="theme-color" content="#161826" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>Momentum</title>
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0b12'/%3E%3Cpath d='M8 21l5-6 4 4 7-9' fill='none' stroke='%237c7cf0' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23161826'/%3E%3Cpath d='M7 22l5-7 4 4 9-11' fill='none' stroke='%239184d9' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="shell" id="shell" aria-busy="true">
-      <header class="masthead">
-        <div>
-          <p class="masthead__eyebrow">Evolve</p>
-          <h1 class="masthead__title" id="greeting">Loading…</h1>
-          <p class="masthead__meta" id="today-label"></p>
-        </div>
-        <button class="btn" type="button" id="add-habit">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
-            <path d="M8 3v10M3 8h10" stroke-linecap="round" />
-          </svg>
-          New habit
-        </button>
-      </header>
-
-      <section class="stat-grid" id="stats" aria-label="Summary"></section>
-
-      <div class="grid-two">
-        <section class="card" aria-labelledby="today-title">
-          <div class="card__head">
-            <h2 class="card__title" id="today-title">Today</h2>
-            <span class="card__hint" id="today-progress"></span>
-          </div>
-          <ul class="habit-list" id="habits"></ul>
-        </section>
-
-        <section class="card" aria-labelledby="consistency-title">
-          <div class="card__head">
-            <h2 class="card__title" id="consistency-title">Consistency</h2>
-            <span class="card__hint">Last 12 weeks</span>
-          </div>
-          <div class="heatmap" id="heatmap" role="img" aria-label="Daily habit completion over the last 12 weeks"></div>
-          <div class="legend">
-            <span>Less</span>
-            <span class="heatmap__cell" data-level="0"></span>
-            <span class="heatmap__cell" data-level="1"></span>
-            <span class="heatmap__cell" data-level="2"></span>
-            <span class="heatmap__cell" data-level="3"></span>
-            <span class="heatmap__cell" data-level="4"></span>
-            <span>More</span>
-          </div>
-        </section>
-      </div>
-
-      <section class="card" aria-labelledby="goals-title">
-        <div class="card__head">
-          <h2 class="card__title" id="goals-title">Goals</h2>
-          <button class="btn btn--ghost" type="button" id="add-goal">Add goal</button>
-        </div>
-        <ul class="goal-list" id="goals"></ul>
-      </section>
-
-      <section class="card" aria-labelledby="journal-title">
-        <div class="card__head">
-          <h2 class="card__title" id="journal-title">Reflection</h2>
-          <span class="card__hint">How did today go?</span>
-        </div>
-
-        <form class="composer" id="journal-form">
-          <textarea
-            id="journal-text"
-            name="text"
-            maxlength="8000"
-            placeholder="One thing that went well, one thing to adjust…"
-            aria-label="Reflection"
-          ></textarea>
-          <div class="scales">
-            <div class="scale">
-              <span class="scale__label" id="mood-label">Mood</span>
-              <div class="scale__options" role="radiogroup" aria-labelledby="mood-label" data-scale="mood"></div>
-            </div>
-            <div class="scale">
-              <span class="scale__label" id="energy-label">Energy</span>
-              <div class="scale__options" role="radiogroup" aria-labelledby="energy-label" data-scale="energy"></div>
-            </div>
-            <button class="btn btn--primary" type="submit" style="margin-left: auto">Save entry</button>
-          </div>
-        </form>
-
-        <ul class="entry-list" id="entries"></ul>
-      </section>
-    </main>
-
-    <dialog id="habit-dialog" aria-labelledby="habit-dialog-title">
-      <form method="dialog" class="dialog__body" id="habit-form">
-        <h2 class="dialog__title" id="habit-dialog-title">New habit</h2>
-        <label class="field">
-          <span>Name</span>
-          <input name="name" maxlength="80" required autocomplete="off" />
-        </label>
-        <label class="field">
-          <span>Target per week</span>
-          <select name="target_per_week">
-            <option value="7">Every day</option>
-            <option value="6">6 days</option>
-            <option value="5">5 days</option>
-            <option value="4">4 days</option>
-            <option value="3">3 days</option>
-            <option value="2">2 days</option>
-            <option value="1">Once a week</option>
-          </select>
-        </label>
-        <div class="field">
-          <span>Colour</span>
-          <div class="swatches" role="radiogroup" aria-label="Colour" id="habit-colors"></div>
-        </div>
-        <div class="dialog__actions">
-          <button class="btn" type="button" data-close>Cancel</button>
-          <button class="btn btn--primary" type="submit">Save habit</button>
-        </div>
-      </form>
-    </dialog>
-
-    <dialog id="goal-dialog" aria-labelledby="goal-dialog-title">
-      <form method="dialog" class="dialog__body" id="goal-form">
-        <h2 class="dialog__title" id="goal-dialog-title">New goal</h2>
-        <label class="field">
-          <span>Title</span>
-          <input name="title" maxlength="120" required autocomplete="off" />
-        </label>
-        <div class="field-row">
-          <label class="field">
-            <span>Current</span>
-            <input name="current" type="number" step="any" min="0" value="0" />
-          </label>
-          <label class="field">
-            <span>Target</span>
-            <input name="target" type="number" step="any" min="0" value="100" required />
-          </label>
-          <label class="field">
-            <span>Unit</span>
-            <input name="unit" maxlength="24" placeholder="pages" autocomplete="off" />
-          </label>
-        </div>
-        <label class="field">
-          <span>Due date</span>
-          <input name="due" type="date" />
-        </label>
-        <label class="field">
-          <span>Notes</span>
-          <input name="notes" maxlength="2000" autocomplete="off" />
-        </label>
-        <div class="dialog__actions">
-          <button class="btn" type="button" data-close>Cancel</button>
-          <button class="btn btn--primary" type="submit">Save goal</button>
-        </div>
-      </form>
-    </dialog>
-
-    <div class="toast" id="toast" role="status" aria-live="polite"></div>
-
-    <script src="app.js"></script>
+    <div id="app" aria-busy="true"></div>
+    <script type="module" src="app.js"></script>
+    <noscript>
+      <p style="padding: 24px; color: #b2b6ca">Momentum needs JavaScript enabled.</p>
+    </noscript>
   </body>
 </html>

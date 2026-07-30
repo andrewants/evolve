@@ -1,15 +1,32 @@
 # Changelog
 
+## 2.0.0
+
+Rebuilt as **Momentum**, implementing the Claude Design handoff.
+
+- **Multi-user household** with 4-digit PIN login, signed `HttpOnly` session
+  cookies, and an exponential lockout on failed attempts (keyed on both
+  account and client IP).
+- **Days-since counters** — up to three on the dashboard, best-streak
+  tracking, and Telegram milestone nudges at 7/14/30/60/100/180/270/365/500/730 days.
+- **Body composition** from a Mi scale via Home Assistant: weight, body fat,
+  muscle, BMI, water and visceral fat, charted with a metric switcher.
+  History is imported from the recorder once and then kept locally, so it
+  survives the recorder's purge window.
+- **Hevy sync** — hourly workout pull, computed volume, Monday-aligned week
+  streak against a per-member sessions-per-week goal.
+- **Affirmations** with pin-to-dashboard and a daily Telegram reminder at a
+  configurable time.
+- **Telegram bot management** — poll for people who message the bot, approve
+  or decline them, send a test message.
+- **Apple Health ingest** over a keyed webhook, for Health Auto Export.
+- Habits, journal, and a step ring against a daily goal.
+- Self-hosted Inter and inlined Phosphor icons — no CDN, so the app works on
+  an offline LAN and under a strict CSP.
+
+Breaking: the 1.0 data file (`dashboard.json`) is not migrated. 2.0 starts a
+new store at `momentum.json`.
+
 ## 1.0.0
 
-Initial release.
-
-- Habit tracking with weekly targets, per-habit colours, current streak, and
-  a 12-week consistency heatmap.
-- Goals with progress meters, units, due dates, and completion state.
-- Daily reflection entries with mood and energy on a 1–5 scale.
-- Optional read-only Home Assistant sensor tiles, configured via the
-  `sensors` add-on option and cached for 20 seconds.
-- Crash-safe JSON storage in `/data`, included in add-on backups; an
-  unreadable store is quarantined rather than blocking startup.
-- Served through ingress: no exposed port, no separate authentication.
+Initial release — habit tracking, goals, and daily reflection.

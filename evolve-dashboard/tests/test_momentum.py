@@ -1,0 +1,721 @@
+"""Tests for the Momentum store, API and integrations.
+
+Stdlib only, so they run inside the add-on image as well as on a dev box:
+
+    python3 -m unittest discover -s evolve-dashboard/tests -v
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import sys
+import tempfile
+import threading
+import time
+import unittest
+import urllib.error
+import urllib.request
+from datetime import date, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
+
+from integrations import Hevy, HomeAssistant, Telegram, normalise_workout  # noqa: E402
+from scheduler import Scheduler  # noqa: E402
+from server import Api, Handler, Sessions, Settings, Throttle  # noqa: E402
+from storage import Store, days_since, hash_pin, verify_pin  # noqa: E402
+
+DAY = lambda off: (date.today() - timedelta(days=off)).isoformat()  # noqa: E731
+
+
+class StoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.path = os.path.join(self.dir.name, "momentum.json")
+        self.store = Store(self.path)
+        self.user = self.store.add_user("Maya", "4821")
+        self.uid = self.user["id"]
+
+    # -- identity -------------------------------------------------------
+
+    def test_pin_is_hashed_not_stored(self) -> None:
+        with open(self.path, encoding="utf-8") as handle:
+            raw = handle.read()
+        self.assertNotIn("4821", raw)
+        self.assertTrue(self.store.check_pin(self.uid, "4821"))
+        self.assertFalse(self.store.check_pin(self.uid, "4822"))
+
+    def test_pin_hash_is_salted(self) -> None:
+        first, salt_a = hash_pin("1234")
+        second, salt_b = hash_pin("1234")
+        self.assertNotEqual(salt_a, salt_b)
+        self.assertNotEqual(first, second)
+        self.assertTrue(verify_pin("1234", first, salt_a))
+        self.assertFalse(verify_pin("1234", first, salt_b))
+
+    def test_store_file_is_owner_only(self) -> None:
+        self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
+
+    # -- counters -------------------------------------------------------
+
+    def test_counter_days_and_reset_keeps_best(self) -> None:
+        counter = self.store.save_counter(
+            self.uid, {"name": "No sugar", "icon": "coffee", "date": DAY(24), "on_dash": True}, None
+        )
+        self.assertEqual(days_since(counter["date"]), 24)
+        reset = self.store.reset_counter(self.uid, counter["id"])
+        self.assertEqual(reset["date"], date.today().isoformat())
+        self.assertEqual(reset["best"], 24)
+
+    def test_dashboard_holds_at_most_three_counters(self) -> None:
+        for i in range(3):
+            self.store.save_counter(self.uid, {"name": f"C{i}", "on_dash": True}, None)
+        fourth = self.store.save_counter(self.uid, {"name": "C4", "on_dash": True}, None)
+        self.assertFalse(fourth["on_dash"], "the fourth counter must not auto-pin")
+
+        with self.assertRaises(ValueError):
+            self.store.toggle_counter_dash(self.uid, fourth["id"])
+
+        shown = [c for c in self.store.user(self.uid)["counters"] if c["on_dash"]]
+        self.assertEqual(len(shown), 3)
+
+    def test_counter_requires_a_name(self) -> None:
+        with self.assertRaises(ValueError):
+            self.store.save_counter(self.uid, {"name": "   "}, None)
+
+    def test_reset_reopens_milestones(self) -> None:
+        counter = self.store.save_counter(self.uid, {"name": "No sugar", "date": DAY(30)}, None)
+        key = f"{counter['id']}:30"
+        self.assertTrue(self.store.mark_milestone(self.uid, key))
+        self.assertFalse(self.store.mark_milestone(self.uid, key), "already announced")
+        self.store.reset_counter(self.uid, counter["id"])
+        self.assertTrue(self.store.mark_milestone(self.uid, key), "a fresh run earns it again")
+
+    # -- affirmations / habits / journal ---------------------------------
+
+    def test_only_one_affirmation_is_pinned(self) -> None:
+        first = self.store.save_affirmation(self.uid, "One", None)
+        second = self.store.save_affirmation(self.uid, "Two", None)
+        self.assertTrue(first["pinned"], "the first one pins itself")
+        self.store.pin_affirmation(self.uid, second["id"])
+        pinned = [a for a in self.store.user(self.uid)["affirmations"] if a["pinned"]]
+        self.assertEqual([a["id"] for a in pinned], [second["id"]])
+
+    def test_habit_toggle_is_idempotent_per_day(self) -> None:
+        habit = self.store.save_habit(self.uid, "Morning yoga", None)
+        today = date.today().isoformat()
+        self.assertTrue(self.store.toggle_habit(self.uid, habit["id"], today)["done"])
+        self.assertFalse(self.store.toggle_habit(self.uid, habit["id"], today)["done"])
+        self.assertTrue(self.store.toggle_habit(self.uid, habit["id"], today)["done"])
+        self.assertEqual(self.store.user(self.uid)["checkins"][habit["id"]], [today])
+
+    def test_deleting_a_habit_drops_its_history(self) -> None:
+        habit = self.store.save_habit(self.uid, "Read", None)
+        self.store.toggle_habit(self.uid, habit["id"], date.today().isoformat())
+        self.assertTrue(self.store.delete_habit(self.uid, habit["id"]))
+        self.assertNotIn(habit["id"], self.store.user(self.uid)["checkins"])
+
+    def test_habit_toggle_rejects_bad_dates(self) -> None:
+        habit = self.store.save_habit(self.uid, "Read", None)
+        with self.assertRaises(ValueError):
+            self.store.toggle_habit(self.uid, habit["id"], "30-07-2026")
+
+    # -- synced data ----------------------------------------------------
+
+    def test_weight_samples_dedupe_by_day(self) -> None:
+        self.store.record_weight_sample(self.uid, {"date": DAY(1), "weight": 60.0, "fat": 27.0})
+        self.store.record_weight_sample(self.uid, {"date": DAY(1), "weight": 59.6, "fat": 26.2})
+        samples = self.store.user(self.uid)["weight_samples"]
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["weight"], 59.6)
+
+    def test_weight_sample_without_weight_is_refused(self) -> None:
+        self.assertFalse(self.store.record_weight_sample(self.uid, {"date": DAY(0), "fat": 26.2}))
+
+    def test_weight_samples_stay_sorted(self) -> None:
+        for off in (5, 1, 9, 3):
+            self.store.record_weight_sample(self.uid, {"date": DAY(off), "weight": 60 + off})
+        dates = [s["date"] for s in self.store.user(self.uid)["weight_samples"]]
+        self.assertEqual(dates, sorted(dates))
+
+    # -- isolation and durability ---------------------------------------
+
+    def test_members_cannot_see_each_others_data(self) -> None:
+        other = self.store.add_user("Dan", "1111")
+        self.store.save_counter(self.uid, {"name": "Maya only"}, None)
+        self.assertEqual(self.store.user(other["id"])["counters"], [])
+        self.assertIsNone(self.store.save_counter(other["id"], {"name": "x"}, "nonexistent-id"))
+
+    def test_snapshot_is_a_copy(self) -> None:
+        snapshot = self.store.snapshot()
+        snapshot["users"].clear()
+        self.assertTrue(self.store.users())
+
+    def test_state_survives_a_reopen(self) -> None:
+        self.store.save_counter(self.uid, {"name": "No sugar", "date": DAY(10)}, None)
+        reopened = Store(self.path)
+        self.assertEqual(len(reopened.user(self.uid)["counters"]), 1)
+        self.assertTrue(reopened.check_pin(self.uid, "4821"))
+
+    def test_corrupt_file_is_quarantined_not_fatal(self) -> None:
+        with open(self.path, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        recovered = Store(self.path)
+        self.assertEqual(recovered.users(), [])
+        self.assertTrue(os.path.exists(f"{self.path}.corrupt"))
+
+    def test_concurrent_writes_do_not_lose_data(self) -> None:
+        habits = [self.store.save_habit(self.uid, f"H{i}", None) for i in range(6)]
+
+        def work(habit_id: str) -> None:
+            for day in range(1, 16):
+                self.store.toggle_habit(self.uid, habit_id, f"2026-06-{day:02d}")
+
+        threads = [threading.Thread(target=work, args=(h["id"],)) for h in habits]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        checkins = self.store.user(self.uid)["checkins"]
+        for habit in habits:
+            self.assertEqual(len(checkins[habit["id"]]), 15)
+
+
+class SessionTests(unittest.TestCase):
+    def test_round_trip_and_tamper_resistance(self) -> None:
+        sessions = Sessions(b"secret-key", ttl_days=1)
+        token = sessions.issue("user-1")
+        self.assertEqual(sessions.verify(token), "user-1")
+
+        body, _, signature = token.rpartition(".")
+        self.assertIsNone(sessions.verify(f"{body}.{'0' * len(signature)}"), "bad signature")
+        self.assertIsNone(sessions.verify("garbage"))
+        self.assertIsNone(sessions.verify(None))
+        self.assertIsNone(Sessions(b"other-key", 1).verify(token), "signed by a different secret")
+
+    def test_expired_token_is_rejected(self) -> None:
+        expired = Sessions(b"secret-key", ttl_days=0)
+        self.assertIsNone(expired.verify(expired.issue("user-1")))
+
+
+class ThrottleTests(unittest.TestCase):
+    def test_backoff_escalates_after_free_attempts(self) -> None:
+        throttle = Throttle()
+        for _ in range(Throttle.FREE_ATTEMPTS):
+            throttle.record_failure("k")
+        self.assertEqual(throttle.retry_after("k"), 0.0, "early attempts are free")
+
+        throttle.record_failure("k")
+        first = throttle.retry_after("k")
+        self.assertGreater(first, 0)
+
+        throttle.record_failure("k")
+        self.assertGreater(throttle.retry_after("k"), first, "the delay doubles")
+
+    def test_success_clears_the_lockout(self) -> None:
+        throttle = Throttle()
+        for _ in range(8):
+            throttle.record_failure("k")
+        self.assertGreater(throttle.retry_after("k"), 0)
+        throttle.clear("k")
+        self.assertEqual(throttle.retry_after("k"), 0.0)
+
+
+class WorkoutTests(unittest.TestCase):
+    def test_volume_and_duration_are_derived(self) -> None:
+        workout = normalise_workout({
+            "id": "w1",
+            "title": "Full Body A",
+            "start_time": "2026-07-28T09:00:00Z",
+            "end_time": "2026-07-28T09:52:00Z",
+            "exercises": [
+                {"sets": [{"reps": 10, "weight_kg": 40}, {"reps": 10, "weight_kg": 40}]},
+                {"sets": [{"reps": 8, "weight_kg": 60}]},
+            ],
+        })
+        self.assertEqual(workout["name"], "Full Body A")
+        self.assertEqual(workout["duration_min"], 52)
+        self.assertEqual(workout["volume_kg"], 10 * 40 + 10 * 40 + 8 * 60)
+        self.assertEqual(workout["exercises"], 2)
+        self.assertEqual(workout["sets"], 3)
+
+    def test_malformed_workouts_are_dropped(self) -> None:
+        self.assertIsNone(normalise_workout({}))
+        self.assertIsNone(normalise_workout({"start_time": "not a date"}))
+        self.assertIsNone(normalise_workout("nope"))
+
+    def test_missing_set_values_do_not_crash(self) -> None:
+        workout = normalise_workout({
+            "title": "Odd", "start_time": "2026-07-28T09:00:00Z",
+            "exercises": [{"sets": [{"reps": None, "weight_kg": None}, {}]}],
+        })
+        self.assertEqual(workout["volume_kg"], 0)
+        self.assertEqual(workout["sets"], 2)
+
+
+class IntegrationClientTests(unittest.TestCase):
+    """Each client is pointed at a local stub rather than the real service."""
+
+    def stub(self, handler_cls):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        # Cleanups run last-in-first-out: stop serving, join, then release
+        # the socket — otherwise the listener leaks into the next test.
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(httpd.shutdown)
+        return f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    def test_home_assistant_reads_and_caches(self) -> None:
+        import integrations
+
+        hits = []
+
+        class Core(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                hits.append(self.path)
+                if "missing" in self.path:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                body = json.dumps({
+                    "state": "59.6",
+                    "attributes": {"unit_of_measurement": "kg", "friendly_name": "Weight"},
+                    "last_changed": "2026-07-28T07:12:00+00:00",
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        base = self.stub(Core)
+        original = integrations.HA_CORE_API
+        integrations.HA_CORE_API = f"{base}/api"
+        try:
+            client = HomeAssistant("token")
+            reading = client.state("sensor.mi_scale_weight")
+            self.assertTrue(reading["ok"])
+            self.assertEqual(reading["value"], 59.6)
+            self.assertEqual(reading["unit"], "kg")
+
+            client.state("sensor.mi_scale_weight")
+            self.assertEqual(len(hits), 1, "second read is served from cache")
+
+            missing = client.state("sensor.missing")
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["reason"], "not found")
+        finally:
+            integrations.HA_CORE_API = original
+
+    def test_home_assistant_without_token_is_inert(self) -> None:
+        client = HomeAssistant(None)
+        self.assertFalse(client.available)
+        self.assertFalse(client.state("sensor.anything")["ok"])
+
+    def test_hevy_reports_a_bad_key(self) -> None:
+        import integrations
+
+        class Api401(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                self.send_response(401)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        base = self.stub(Api401)
+        original = integrations.HEVY_API
+        integrations.HEVY_API = f"{base}/v1"
+        try:
+            workouts, error = Hevy("bad-key").workouts()
+            self.assertEqual(workouts, [])
+            self.assertEqual(error, "invalid api key")
+        finally:
+            integrations.HEVY_API = original
+
+    def test_hevy_without_a_key_does_not_call_out(self) -> None:
+        self.assertEqual(Hevy("").workouts(), ([], "no api key"))
+
+    def test_telegram_extracts_senders_from_updates(self) -> None:
+        import integrations
+
+        class Bot(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = json.dumps({
+                    "ok": True,
+                    "result": [
+                        {
+                            "update_id": 12,
+                            "message": {
+                                "chat": {"id": 482915337},
+                                "from": {"first_name": "Dan", "username": "dan_v"},
+                                "text": "/start",
+                            },
+                        },
+                        {
+                            "update_id": 13,
+                            "message": {
+                                "chat": {"id": 904471182},
+                                "from": {"first_name": "Alex"},
+                                "text": "hello",
+                            },
+                        },
+                    ],
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        base = self.stub(Bot)
+        original = integrations.TELEGRAM_API
+        integrations.TELEGRAM_API = base
+        try:
+            chats, offset = Telegram("token").updates(0)
+            self.assertEqual(offset, 13)
+            self.assertEqual(
+                sorted((c["chat_id"], c["handle"]) for c in chats),
+                [("482915337", "@dan_v"), ("904471182", "")],
+            )
+        finally:
+            integrations.TELEGRAM_API = original
+
+    def test_telegram_without_a_token_is_inert(self) -> None:
+        bot = Telegram("")
+        self.assertFalse(bot.configured)
+        self.assertEqual(bot.send("1", "hi"), (False, "no bot token"))
+        self.assertEqual(bot.updates(0), ([], 0))
+
+
+class ApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.dir = tempfile.TemporaryDirectory()
+        settings = Settings()
+        settings.data_dir = cls.dir.name
+        settings.www_dir = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "app", "www")
+        )
+        cls.store = Store(os.path.join(cls.dir.name, "momentum.json"))
+        hass = HomeAssistant(None)
+        Handler.settings = settings
+        Handler.api = Api(settings, cls.store, hass, Scheduler(cls.store, hass, settings))
+
+        cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+        cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        cls.thread.join(timeout=5)
+        cls.dir.cleanup()
+
+    def setUp(self) -> None:
+        self.cookie = None
+        self.raw_cookie = None
+
+    def call(self, path, method="GET", body=None, cookie=True):
+        data = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json"}
+        if cookie and self.cookie:
+            headers["Cookie"] = self.cookie
+        request = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request) as response:
+                self._capture(response)
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as error:
+            self._capture(error)
+            raw = error.read()
+            try:
+                return error.code, json.loads(raw)
+            except ValueError:
+                return error.code, {"raw": raw[:80].decode(errors="replace")}
+
+    def _capture(self, response) -> None:
+        for value in response.headers.get_all("Set-Cookie") or []:
+            self.raw_cookie = value          # attributes intact, for flag assertions
+            self.cookie = value.split(";")[0]  # name=value, for sending back
+
+    def sign_in(self):
+        status, payload = self.call("/api/session")
+        if payload.get("setup_required"):
+            self.call("/api/setup", "POST", {"name": "Maya", "pin": "4821"})
+            return
+        user_id = payload["users"][0]["id"]
+        # A shared Throttle across tests would spuriously lock us out.
+        Handler.api.throttle.clear(f"u:{user_id}")
+        Handler.api.throttle.clear("ip:127.0.0.1")
+        self.call("/api/session", "POST", {"user_id": user_id, "pin": "4821"})
+
+    # -- auth -----------------------------------------------------------
+
+    def test_protected_routes_need_a_session(self) -> None:
+        for path, method in [
+            ("/api/bootstrap", "GET"),
+            ("/api/counters", "POST"),
+            ("/api/settings", "PUT"),
+            ("/api/sync/hevy", "POST"),
+        ]:
+            status, _ = self.call(path, method, {} if method != "GET" else None, cookie=False)
+            self.assertEqual(status, 401, f"{method} {path}")
+
+    def test_setup_then_sign_in(self) -> None:
+        self.sign_in()
+        status, payload = self.call("/api/bootstrap")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["me"]["name"], "Maya")
+
+    def test_setup_cannot_run_twice(self) -> None:
+        self.sign_in()
+        status, _ = self.call("/api/setup", "POST", {"name": "Intruder", "pin": "0000"})
+        self.assertEqual(status, 409)
+
+    def test_pin_must_be_four_digits(self) -> None:
+        self.sign_in()
+        for bad in ("123", "12345", "abcd", ""):
+            status, _ = self.call("/api/household", "POST", {"name": "X", "pin": bad})
+            self.assertEqual(status, 400, bad)
+
+    def test_secrets_never_leave_the_container(self) -> None:
+        self.sign_in()
+        self.call("/api/telegram", "PUT", {"token": "12345:SECRET-TOKEN", "default_chat": "-100"})
+        self.call("/api/settings", "PUT", {"hevy_key": "HEVY-SECRET"})
+        _, payload = self.call("/api/bootstrap")
+        blob = json.dumps(payload)
+        self.assertNotIn("SECRET-TOKEN", blob)
+        self.assertNotIn("HEVY-SECRET", blob)
+        self.assertTrue(payload["telegram"]["configured"])
+        self.assertTrue(payload["settings"]["hevy_configured"])
+
+    def test_signing_out_invalidates_the_cookie(self) -> None:
+        self.sign_in()
+        self.assertEqual(self.call("/api/bootstrap")[0], 200)
+        self.call("/api/session", "DELETE")
+        self.cookie = None
+        self.assertEqual(self.call("/api/bootstrap", cookie=False)[0], 401)
+
+    # -- resources ------------------------------------------------------
+
+    def test_counter_lifecycle(self) -> None:
+        self.sign_in()
+        status, created = self.call(
+            "/api/counters", "POST", {"name": "No sugar", "icon": "coffee", "date": DAY(24), "on_dash": True}
+        )
+        self.assertEqual(status, 201)
+        counter_id = created["counter"]["id"]
+
+        _, boot = self.call("/api/bootstrap")
+        found = next(c for c in boot["counters"] if c["id"] == counter_id)
+        self.assertEqual(found["days"], 24)
+
+        status, reset = self.call(f"/api/counters/{counter_id}/reset", "POST")
+        self.assertEqual((status, reset["counter"]["best"]), (200, 24))
+        self.assertEqual(self.call(f"/api/counters/{counter_id}", "DELETE")[0], 200)
+        self.assertEqual(self.call(f"/api/counters/{counter_id}", "DELETE")[0], 404)
+
+    def test_habit_toggle_round_trip(self) -> None:
+        self.sign_in()
+        _, created = self.call("/api/habits", "POST", {"name": "Morning yoga"})
+        habit_id = created["habit"]["id"]
+        _, toggled = self.call(f"/api/habits/{habit_id}/toggle", "POST", {})
+        self.assertTrue(toggled["checkin"]["done"])
+        _, boot = self.call("/api/bootstrap")
+        self.assertTrue(next(h for h in boot["habits"] if h["id"] == habit_id)["done"])
+
+    def test_last_member_cannot_be_removed(self) -> None:
+        self.sign_in()
+        _, boot = self.call("/api/bootstrap")
+        status, _ = self.call(f"/api/household/{boot['me']['id']}", "DELETE")
+        self.assertIn(status, (409,))
+
+    def test_cannot_change_another_members_pin(self) -> None:
+        self.sign_in()
+        status, other = self.call("/api/household", "POST", {"name": "Dan", "pin": "1111"})
+        self.assertEqual(status, 201)
+        status, _ = self.call(f"/api/household/{other['member']['id']}", "PUT", {"pin": "9999"})
+        self.assertEqual(status, 403)
+
+    # -- webhook --------------------------------------------------------
+
+    def test_health_webhook_requires_the_key(self) -> None:
+        self.sign_in()
+        status, _ = self.call("/api/health-webhook?key=wrong", "POST", {}, cookie=False)
+        self.assertEqual(status, 401)
+
+    def test_health_webhook_ingests_steps(self) -> None:
+        self.sign_in()
+        _, boot = self.call("/api/bootstrap")
+        path = boot["integrations"]["health_webhook_path"]
+        status, payload = self.call(path, "POST", {
+            "data": {"metrics": [
+                {"name": "step_count", "units": "count",
+                 "data": [{"date": f"{DAY(0)} 00:00:00 +0000", "qty": 8930}]},
+            ]},
+        }, cookie=False)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["written"]["steps"], 1)
+        _, boot = self.call("/api/bootstrap")
+        self.assertEqual(boot["steps"], 8930)
+
+    # -- transport ------------------------------------------------------
+
+    def test_malformed_bodies_are_rejected(self) -> None:
+        self.sign_in()
+        request = urllib.request.Request(
+            self.base + "/api/counters", data=b"<<<", method="POST",
+            headers={"Content-Type": "application/json", "Cookie": self.cookie},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request)
+        self.assertEqual(ctx.exception.code, 400)
+        self.assertEqual(self.call("/api/counters", "POST", [1, 2])[0], 400)
+
+    def test_unknown_endpoint_and_method(self) -> None:
+        self.assertEqual(self.call("/api/nope", cookie=False)[0], 404)
+        # A verb the route knows but does not allow.
+        self.assertEqual(self.call("/api/bootstrap", "DELETE", {}, cookie=False)[0], 405)
+        # A verb the server implements nowhere at all.
+        self.assertEqual(self.call("/api/session", "PATCH", {}, cookie=False)[0], 501)
+
+    def test_static_assets_are_served(self) -> None:
+        for path in ("/", "/index.html", "/styles.css", "/app.js", "/icons.js", "/fonts/inter.woff2"):
+            with urllib.request.urlopen(self.base + path) as response:
+                self.assertEqual(response.status, 200, path)
+                self.assertTrue(response.read())
+
+    def test_security_headers_are_set(self) -> None:
+        with urllib.request.urlopen(self.base + "/") as response:
+            self.assertEqual(response.headers.get("X-Content-Type-Options"), "nosniff")
+            self.assertIn("default-src 'self'", response.headers.get("Content-Security-Policy", ""))
+
+    def test_session_cookie_is_hardened(self) -> None:
+        self.sign_in()
+        self.assertIn("HttpOnly", self.raw_cookie or "")
+        self.assertIn("SameSite=Lax", self.raw_cookie or "")
+        self.assertIn("Path=/", self.raw_cookie or "")
+
+    def raw_get(self, path: str) -> bytes:
+        import socket
+
+        conn = socket.create_connection(("127.0.0.1", self.httpd.server_address[1]), timeout=5)
+        try:
+            conn.sendall(f"GET {path} HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n".encode())
+            chunks = []
+            while True:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks)
+        finally:
+            conn.close()
+
+    def test_path_traversal_cannot_escape_the_web_root(self) -> None:
+        escapes = [
+            "/../server.py", "/../../etc/passwd", "/../../../../etc/passwd",
+            "/..%2f..%2fstorage.py", "/%2e%2e%2fserver.py", "/....//server.py",
+            "/./../../app/storage.py", "/../momentum.json",
+        ]
+        leaks = [b"SCHEMA_VERSION", b"BaseHTTPRequestHandler", b"root:x:", b"pin_hash", b"session_secret"]
+        for path in escapes:
+            response = self.raw_get(path)
+            for marker in leaks:
+                self.assertNotIn(marker, response, f"{path} leaked {marker!r}")
+
+    def test_oversized_body_is_refused_cleanly(self) -> None:
+        """The client must receive 413, not a broken pipe.
+
+        The server rejects on Content-Length before buffering, so it has to
+        drain the rejected body or the reply races the still-uploading client.
+        """
+        self.sign_in()
+        request = urllib.request.Request(
+            self.base + "/api/journal",
+            data=json.dumps({"text": "x" * (600 * 1024)}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json", "Cookie": self.cookie},
+        )
+        with self.assertRaises(urllib.error.HTTPError) as ctx:
+            urllib.request.urlopen(request)
+        self.assertEqual(ctx.exception.code, 413)
+        self.assertIn("too large", json.loads(ctx.exception.read())["error"])
+
+    def test_body_at_the_limit_is_accepted(self) -> None:
+        self.sign_in()
+        # Comfortably under 512 KiB once JSON-encoded, but far past any
+        # ordinary entry — the cap must not clip normal use.
+        status, _ = self.call("/api/journal", "POST", {"text": "y" * 7000})
+        self.assertEqual(status, 201)
+
+
+class SchedulerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.store = Store(os.path.join(self.dir.name, "momentum.json"))
+        self.user = self.store.add_user("Maya", "4821")
+        self.scheduler = Scheduler(self.store, HomeAssistant(None), Settings())
+        self.sent: list[tuple[str, str]] = []
+        self.scheduler._notify = lambda user, text: (self.sent.append((user["name"], text)), True)[1]
+
+    def test_milestone_fires_once_per_threshold(self) -> None:
+        self.store.save_counter(self.user["id"], {"name": "No sugar", "date": DAY(30)}, None)
+        self.assertEqual(self.scheduler.check_milestones(), 1)
+        self.assertEqual(self.scheduler.check_milestones(), 0, "not announced twice")
+        self.assertIn("30 days", self.sent[0][1])
+
+    def test_no_milestone_on_an_ordinary_day(self) -> None:
+        self.store.save_counter(self.user["id"], {"name": "No sugar", "date": DAY(31)}, None)
+        self.assertEqual(self.scheduler.check_milestones(), 0)
+
+    def test_milestone_text_escapes_html(self) -> None:
+        self.store.save_counter(self.user["id"], {"name": "No <b>junk</b>", "date": DAY(7)}, None)
+        self.scheduler.check_milestones()
+        self.assertIn("&lt;b&gt;junk&lt;/b&gt;", self.sent[0][1])
+
+    def test_reminder_only_fires_at_the_configured_minute(self) -> None:
+        uid = self.user["id"]
+        self.store.save_affirmation(uid, "Progress, not perfection.", None)
+        self.store.update_user_settings(uid, {"reminder": {"on": True, "time": "00:00"}})
+        now = time.strftime("%H:%M")
+        self.store.update_user_settings(uid, {"reminder": {"on": True, "time": now}})
+        self.assertEqual(self.scheduler.run_reminders(), 1)
+        self.assertEqual(self.scheduler.run_reminders(), 0, "deduped within the same minute")
+
+    def test_reminder_off_sends_nothing(self) -> None:
+        uid = self.user["id"]
+        self.store.save_affirmation(uid, "Progress.", None)
+        self.store.update_user_settings(uid, {"reminder": {"on": False, "time": time.strftime("%H:%M")}})
+        self.assertEqual(self.scheduler.run_reminders(), 0)
+
+    def test_jobs_survive_a_failing_integration(self) -> None:
+        def boom():
+            raise RuntimeError("integration down")
+
+        # The guard logs the traceback; silence it so the run stays readable.
+        logging.getLogger("momentum.scheduler").setLevel(logging.CRITICAL)
+        self.addCleanup(logging.getLogger("momentum.scheduler").setLevel, logging.NOTSET)
+        self.scheduler._guard("weight", boom)  # must not raise
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
