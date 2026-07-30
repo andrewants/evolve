@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.1
+
+- Add the required `repository.yaml` descriptor so current Home Assistant
+  Supervisor versions refresh the custom repository and detect updates.
+
 ## 2.2.0
 
 - Import Zepp Life export ZIPs directly from Settings for the signed-in

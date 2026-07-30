@@ -43,7 +43,7 @@ MAX_IMPORT_BYTES = 128 * 1024 * 1024
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
