@@ -90,6 +90,20 @@ window.
 
 The add-on only ever **reads** entities. It never calls services.
 
+### Zepp Life history
+
+Zepp Life → Profile → Settings → About → Exercising user rights → Export data.
+When the export is ready, sign in to the appropriate Momentum household
+member and open Settings → **Zepp Life history**. Upload the original ZIP;
+there is no need to extract or modify it.
+
+Momentum reads only `BODY/BODY_*.csv`. The optional `user` folder and all
+activity, sleep and heart-rate files are ignored. Weight, BMI, body fat,
+water, muscle and visceral fat are grouped into daily history points.
+Existing non-empty HA or Momentum values are preserved; Zepp adds missing
+dates and fills missing metrics on dates already present. Re-importing the
+same export is safe.
+
 ### Hevy
 
 Settings → **Hevy**. Get an API key from hevy.com → Settings → Developer,
@@ -179,9 +193,11 @@ All routes need the session cookie except `/api/session`, `/api/setup` and
 | `POST`   | `/api/telegram/test`             | Send a test message           |
 | `POST`   | `/api/sync/hevy`                 | Sync workouts now             |
 | `POST`   | `/api/sync/backfill`             | Import weight history from HA |
+| `POST`   | `/api/import/zepp-life`           | Import a Zepp Life export ZIP |
 | `POST`   | `/api/health-webhook?key=…`      | Apple Health ingest           |
 
-Bodies are JSON objects capped at 512 KiB. Errors are `{"error": "..."}`.
+Bodies are JSON objects capped at 512 KiB, except the Zepp endpoint, whose
+body is the raw ZIP and is capped at 128 MiB. Errors are `{"error": "..."}`.
 
 ## Troubleshooting
 

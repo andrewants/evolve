@@ -491,6 +491,51 @@ class Store:
             self._commit()
             return True
 
+    def merge_weight_samples(
+        self, user_id: str, imported: list[dict[str, Any]]
+    ) -> dict[str, int]:
+        """Merge imported history, preserving every existing non-null field."""
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return {"added": 0, "updated": 0, "unchanged": 0}
+
+            by_day = {sample.get("date"): dict(sample) for sample in user["weight_samples"]}
+            added = updated = unchanged = 0
+            for sample in imported:
+                day = str(sample.get("date") or "")
+                _require_day(day)
+                incoming = {"date": day}
+                for key in METRIC_KEYS:
+                    value = sample.get(key)
+                    incoming[key] = None if value is None else _as_float(value)
+                if incoming["weight"] is None:
+                    unchanged += 1
+                    continue
+
+                existing = by_day.get(day)
+                if existing is None:
+                    by_day[day] = incoming
+                    added += 1
+                    continue
+
+                merged = dict(existing)
+                changed = False
+                for key in METRIC_KEYS:
+                    if merged.get(key) is None and incoming.get(key) is not None:
+                        merged[key] = incoming[key]
+                        changed = True
+                by_day[day] = merged
+                if changed:
+                    updated += 1
+                else:
+                    unchanged += 1
+
+            user["weight_samples"] = [by_day[day] for day in sorted(by_day)]
+            if added or updated:
+                self._commit()
+            return {"added": added, "updated": updated, "unchanged": unchanged}
+
     def replace_workouts(self, user_id: str, workouts: list[dict[str, Any]]) -> bool:
         with self._lock:
             user = self._user_ref(user_id)

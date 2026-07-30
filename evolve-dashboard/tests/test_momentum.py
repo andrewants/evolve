@@ -8,6 +8,7 @@ Stdlib only, so they run inside the add-on image as well as on a dev box:
 from __future__ import annotations
 
 import json
+import io
 import logging
 import os
 import sys
@@ -17,6 +18,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+import zipfile
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -26,8 +28,19 @@ from integrations import Hevy, HomeAssistant, Telegram, normalise_workout  # noq
 from scheduler import Scheduler  # noqa: E402
 from server import Api, Handler, Sessions, Settings, Throttle  # noqa: E402
 from storage import Store, days_since, hash_pin, verify_pin  # noqa: E402
+from zepp import parse_zepp_life_export  # noqa: E402
 
 DAY = lambda off: (date.today() - timedelta(days=off)).isoformat()  # noqa: E731
+
+
+def zepp_zip(body_csv: str, *, include_user_copy: bool = False) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("export/BODY/BODY_123.csv", body_csv)
+        archive.writestr("export/ACTIVITY/ACTIVITY_123.csv", "date,steps\n2026-01-01,1000\n")
+        if include_user_copy:
+            archive.writestr("export/user/BODY/BODY_private.csv", body_csv)
+    return buffer.getvalue()
 
 
 class StoreTests(unittest.TestCase):
@@ -145,6 +158,29 @@ class StoreTests(unittest.TestCase):
         workouts = [{"id": str(index), "date": DAY(index)} for index in range(250)]
         self.assertTrue(self.store.replace_workouts(self.uid, workouts))
         self.assertEqual(len(self.store.user(self.uid)["workouts"]), 250)
+
+    def test_imported_weight_history_only_fills_missing_existing_fields(self) -> None:
+        self.store.record_weight_sample(
+            self.uid,
+            {"date": "2025-01-17", "weight": 74.9, "fat": None, "bmi": 25.6},
+        )
+        result = self.store.merge_weight_samples(self.uid, [
+            {
+                "date": "2025-01-17",
+                "weight": 75.1,
+                "fat": 23.7,
+                "bmi": 25.68,
+                "water": 52.3,
+            },
+            {"date": "2025-01-18", "weight": 73.6, "bmi": 25.17},
+        ])
+        self.assertEqual(result, {"added": 1, "updated": 1, "unchanged": 0})
+        samples = {sample["date"]: sample for sample in self.store.user(self.uid)["weight_samples"]}
+        self.assertEqual(samples["2025-01-17"]["weight"], 74.9, "existing weight wins")
+        self.assertEqual(samples["2025-01-17"]["bmi"], 25.6, "existing BMI wins")
+        self.assertEqual(samples["2025-01-17"]["fat"], 23.7, "missing fat is enriched")
+        self.assertEqual(samples["2025-01-17"]["water"], 52.3)
+        self.assertEqual(samples["2025-01-18"]["weight"], 73.6)
 
     # -- isolation and durability ---------------------------------------
 
@@ -558,6 +594,39 @@ class IntegrationClientTests(unittest.TestCase):
         self.assertEqual(bot.updates(0), ([], 0))
 
 
+class ZeppLifeTests(unittest.TestCase):
+    def test_body_csv_maps_metrics_and_ignores_zero_null_and_user_folder(self) -> None:
+        archive = zepp_zip(
+            "\ufefftime,weight,height,bmi,fatRate,bodyWaterRate,boneMass,metabolism,muscleRate,visceralFat\n"
+            "2025-01-17 08:00:00+0000,75.5,171,25.8,0,0,0,0,0,0\n"
+            "2025-01-17 12:53:17+0000,75.1,171,25.68,23.7,52.3,2.91,1694,54.34,9\n"
+            "2025-01-18 08:19:56+0000,73.6,171,25.17,null,null,null,null,null,null\n",
+            include_user_copy=True,
+        )
+        samples, rows = parse_zepp_life_export(archive)
+        self.assertEqual(rows, 3, "the duplicate CSV under user must be ignored")
+        self.assertEqual(len(samples), 2)
+        self.assertEqual(samples[0], {
+            "date": "2025-01-17",
+            "weight": 75.1,
+            "bmi": 25.68,
+            "fat": 23.7,
+            "water": 52.3,
+            "muscle": 54.34,
+            "visceral": 9.0,
+        })
+        self.assertEqual(samples[1], {"date": "2025-01-18", "weight": 73.6, "bmi": 25.17})
+
+    def test_invalid_or_bodyless_exports_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "valid Zepp Life ZIP"):
+            parse_zepp_life_export(b"not a zip")
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("export/user/profile.csv", "private")
+        with self.assertRaisesRegex(ValueError, "No BODY"):
+            parse_zepp_life_export(buffer.getvalue())
+
+
 class ApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -605,6 +674,21 @@ class ApiTests(unittest.TestCase):
                 return error.code, json.loads(raw)
             except ValueError:
                 return error.code, {"raw": raw[:80].decode(errors="replace")}
+
+    def call_raw(self, path, body: bytes, content_type: str, cookie=True):
+        headers = {"Content-Type": content_type}
+        if cookie and self.cookie:
+            headers["Cookie"] = self.cookie
+        request = urllib.request.Request(
+            self.base + path, data=body, method="POST", headers=headers
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                self._capture(response)
+                return response.status, json.loads(response.read() or b"{}")
+        except urllib.error.HTTPError as error:
+            self._capture(error)
+            return error.code, json.loads(error.read() or b"{}")
 
     def _capture(self, response) -> None:
         for value in response.headers.get_all("Set-Cookie") or []:
@@ -731,6 +815,28 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(payload["written"]["steps"], 1)
         _, boot = self.call("/api/bootstrap")
         self.assertEqual(boot["steps"], 8930)
+
+    def test_zepp_life_import_requires_auth_and_merges_history(self) -> None:
+        archive = zepp_zip(
+            "time,weight,height,bmi,fatRate,bodyWaterRate,boneMass,metabolism,muscleRate,visceralFat\n"
+            "2031-03-04 07:00:00+0000,70.2,171,24.0,20.1,54.8,3,1600,52.4,8\n"
+        )
+        self.assertEqual(
+            self.call_raw("/api/import/zepp-life", archive, "application/zip", cookie=False)[0],
+            401,
+        )
+        self.sign_in()
+        status, payload = self.call_raw(
+            "/api/import/zepp-life", archive, "application/zip"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["rows"], 1)
+        self.assertEqual(payload["days"], 1)
+        self.assertEqual(payload["added"], 1)
+        _, boot = self.call("/api/bootstrap")
+        sample = next(item for item in boot["weight_samples"] if item["date"] == "2031-03-04")
+        self.assertEqual(sample["weight"], 70.2)
+        self.assertEqual(sample["fat"], 20.1)
 
     # -- transport ------------------------------------------------------
 

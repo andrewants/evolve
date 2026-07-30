@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.2.0
+
+- Import Zepp Life export ZIPs directly from Settings for the signed-in
+  household member.
+- Map BODY history into weight, BMI, body fat, water, muscle and visceral-fat
+  timelines while ignoring the optional private `user` folder.
+- Merge imported dates and missing fields without overwriting existing HA or
+  Momentum values; repeated imports are idempotent.
+- Validate archives in memory without extracting files to disk.
+
 ## 2.1.0
 
 - Prefer one legacy `bodymiscale.<person>` entity and read all body metrics

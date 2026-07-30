@@ -32,16 +32,18 @@ from typing import Any, Callable
 from integrations import Hevy, HomeAssistant, Telegram, parse_iso_day
 from scheduler import Scheduler
 from storage import COUNTER_ICONS, METRICS, Store, days_since, today_iso
+from zepp import parse_zepp_life_export
 
 LOGGER = logging.getLogger("momentum")
 
 MAX_BODY_BYTES = 512 * 1024
+MAX_IMPORT_BYTES = 128 * 1024 * 1024
 # An oversized body is drained (up to this much) before replying, so the
 # client sees the error instead of a broken pipe. Past it, the connection
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
@@ -218,6 +220,7 @@ class Api:
             Route("POST", r"/api/sync/weight", self.sync_weight),
             Route("POST", r"/api/sync/hevy", self.sync_hevy),
             Route("POST", r"/api/sync/backfill", self.backfill),
+            Route("POST", r"/api/import/zepp-life", self.import_zepp_life),
         ]
 
     # -- dispatch -------------------------------------------------------
@@ -522,6 +525,22 @@ class Api:
     def backfill(self, _body: dict, ctx) -> tuple[int, Any]:
         return HTTPStatus.OK, {"samples": self.scheduler.backfill_weight(ctx.user_id)}
 
+    def import_zepp_life(self, body: dict, ctx) -> tuple[int, Any]:
+        archive = body.get("archive")
+        if not isinstance(archive, bytes):
+            raise ValueError("Upload a Zepp Life export ZIP")
+        samples, rows = parse_zepp_life_export(archive)
+        merged = self.store.merge_weight_samples(ctx.user_id, samples)
+        LOGGER.info(
+            "Imported Zepp Life history for %s: rows=%d days=%d added=%d updated=%d",
+            ctx.user_id,
+            rows,
+            len(samples),
+            merged["added"],
+            merged["updated"],
+        )
+        return HTTPStatus.OK, {"rows": rows, "days": len(samples), **merged}
+
     # -- webhook --------------------------------------------------------
 
     def health_webhook(self, body: dict, ctx: "RequestContext") -> tuple[int, Any]:
@@ -678,7 +697,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.NOT_FOUND, {"error": "unknown endpoint"})
             return
         try:
-            body = self._read_json_body()
+            body = self._read_api_body(path)
         except BodyTooLarge as error:
             self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"error": str(error)})
             return
@@ -695,17 +714,22 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json(status, payload, ctx=ctx)
 
-    def _read_json_body(self) -> dict[str, Any]:
+    def _read_api_body(self, path: str) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             raise ValueError("invalid Content-Length") from None
         if length <= 0:
             return {}
-        if length > MAX_BODY_BYTES:
+        limit = MAX_IMPORT_BYTES if path == "/api/import/zepp-life" else MAX_BODY_BYTES
+        if length > limit:
             self._drain(length)
-            raise BodyTooLarge("request body too large")
+            raise BodyTooLarge(
+                "Zepp Life export is too large" if path == "/api/import/zepp-life" else "request body too large"
+            )
         raw = self.rfile.read(length)
+        if path == "/api/import/zepp-life":
+            return {"archive": raw}
         try:
             parsed = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):

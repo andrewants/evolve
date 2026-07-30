@@ -139,6 +139,24 @@ async function api(endpoint, { method = "GET", body } = {}) {
   return payload;
 }
 
+async function uploadZeppLife(file) {
+  let response;
+  try {
+    response = await fetch(url("/api/import/zepp-life"), {
+      method: "POST",
+      body: file,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/zip" },
+    });
+  } catch {
+    throw new Error("Cannot reach the server");
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 401) throw new Error("Session expired — sign in again");
+  if (!response.ok) throw new Error(payload.error || `Import failed (${response.status})`);
+  return payload;
+}
+
 async function guard(action, successMessage) {
   if (state.busy) return;
   state.busy = true;
@@ -1221,6 +1239,35 @@ function screenSettings() {
         }),
       ]),
       el("button", { class: "btn btn-primary", type: "submit", style: "min-height:44px", text: "Save & import history" }),
+    ]),
+
+    section("Zepp Life history"),
+    el("form", {
+      class: "card stack-card",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const file = event.target.elements.archive.files[0];
+        if (!file) {
+          toast("Choose a Zepp Life export ZIP", true);
+          return;
+        }
+        guard(async () => {
+          const result = await uploadZeppLife(file);
+          await refresh();
+          toast(`Imported ${result.days} days · ${result.added} new · ${result.updated} enriched`);
+          event.target.reset();
+        });
+      },
+    }, [
+      el("div", { class: "muted-sm", text: "Import BODY history from a Zepp Life export. Existing HA and Momentum values are preserved; missing fields are filled from Zepp." }),
+      el("label", { class: "field" }, [
+        el("span", { text: "Zepp Life export" }),
+        el("input", {
+          class: "input", name: "archive", type: "file",
+          accept: ".zip,application/zip,application/x-zip-compressed",
+        }),
+      ]),
+      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:44px", text: "Import Zepp history" }),
     ]),
 
     // ── hevy key
