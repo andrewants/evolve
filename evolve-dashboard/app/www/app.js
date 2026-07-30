@@ -36,6 +36,8 @@ const state = {
   tab: "home",
   sub: null, // counters | journal
   metric: "weight",
+  chartSpanDays: 365,
+  chartOffsetDays: 0,
   modal: null,
   editId: null,
   form: {},
@@ -93,6 +95,8 @@ const fromIso = (iso) => {
 /** "Jul 30" — matches the mockup's date formatting. */
 const fmtShort = (iso) =>
   fromIso(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const fmtChartDate = (iso) =>
+  fromIso(iso).toLocaleDateString(undefined, { month: "short", year: "numeric" });
 const fmtLong = (iso) =>
   fromIso(iso).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 const fmtSession = (iso) =>
@@ -180,6 +184,110 @@ function metricSeries(key) {
   return samples.filter((s) => s[key] !== null && s[key] !== undefined);
 }
 
+function counterIconCatalog() {
+  return (data().counter_icons || []).map((item) =>
+    typeof item === "string"
+      ? { name: item, label: item.replaceAll("-", " "), keywords: [] }
+      : item
+  );
+}
+
+function iconSearchTerms(text) {
+  const ignored = new Set(["a", "an", "and", "day", "days", "for", "from", "my", "no", "not", "of", "since", "the", "to", "without"]);
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter((term) => term && !ignored.has(term));
+}
+
+function rankCounterIcons(text, limit = null) {
+  const terms = iconSearchTerms(text);
+  if (!terms.length) return [];
+  const phrase = terms.join(" ");
+  const ranked = counterIconCatalog().map((item, order) => {
+    const name = item.name.replaceAll("-", " ");
+    const label = String(item.label || "").toLowerCase();
+    const keywords = (item.keywords || []).map((keyword) => String(keyword).toLowerCase());
+    let score = label === phrase || name === phrase ? 40 : 0;
+    for (const term of terms) {
+      if (label === term || name === term) score += 16;
+      else if (label.startsWith(term) || name.startsWith(term)) score += 10;
+      else if (label.includes(term) || name.includes(term)) score += 5;
+      if (keywords.includes(term)) score += 14;
+      else if (keywords.some((keyword) => keyword.startsWith(term))) score += 8;
+      else if (keywords.some((keyword) => keyword.includes(term))) score += 3;
+    }
+    return { item, score, order };
+  }).filter((entry) => entry.score > 0);
+  ranked.sort((a, b) => b.score - a.score || a.order - b.order);
+  const items = ranked.map((entry) => entry.item);
+  return limit === null ? items : items.slice(0, limit);
+}
+
+function counterIconChoice(item, form) {
+  return el("button", {
+    class: `icon-choice${form.icon === item.name ? " on" : ""}`,
+    type: "button",
+    role: "radio",
+    "aria-checked": String(form.icon === item.name),
+    "aria-label": item.label,
+    title: item.label,
+    onclick: () => {
+      form.icon = item.name;
+      form.icon_touched = true;
+      updateCounterIconPicker(form);
+    },
+  }, [
+    icon(item.name),
+    el("span", { text: item.label }),
+  ]);
+}
+
+function counterIconResults(form) {
+  const catalog = counterIconCatalog();
+  const query = String(form.icon_query || "").trim();
+  const suggestions = rankCounterIcons(form.name, 8);
+  const matches = query ? rankCounterIcons(query) : catalog;
+  const selected = catalog.find((item) => item.name === form.icon) || catalog[0];
+  const children = [
+    el("div", { class: "icon-picker-selection" }, [
+      selected ? icon(selected.name) : null,
+      el("div", {}, [
+        el("div", { class: "icon-picker-selection-label", text: selected?.label || "Choose an icon" }),
+        el("div", { class: "muted-sm", text: `${catalog.length} consistent local icons` }),
+      ]),
+    ]),
+  ];
+
+  if (!query && suggestions.length) {
+    children.push(
+      el("div", { class: "icon-picker-heading", text: "Suggested from the name" }),
+      el("div", { class: "icon-suggestion-row", role: "radiogroup", "aria-label": "Suggested icons" },
+        suggestions.map((item) => counterIconChoice(item, form))
+      )
+    );
+  }
+  children.push(
+    el("div", {
+      class: "icon-picker-heading",
+      text: query ? `${matches.length} search result${matches.length === 1 ? "" : "s"}` : `All icons · ${catalog.length}`,
+    }),
+    matches.length
+      ? el("div", { class: "icon-library-grid", role: "radiogroup", "aria-label": "Icon library" },
+          matches.map((item) => counterIconChoice(item, form))
+        )
+      : el("div", { class: "empty icon-picker-empty", text: "No matching icons. Try another word." })
+  );
+  return children;
+}
+
+function updateCounterIconPicker(form) {
+  const container = $(".icon-picker-results");
+  if (container) container.replaceChildren(...counterIconResults(form));
+}
+
 function weekCounts() {
   // Eight Monday-aligned buckets; the last one is the week in progress.
   const now = new Date();
@@ -224,36 +332,102 @@ function sparkline(values) {
   );
 }
 
-function metricChart(values) {
-  if (values.length < 2) {
+function chartWindow(series) {
+  if (!series.length) return { visible: [], maxOffset: 0 };
+  const ordered = series.slice().sort((a, b) => fromIso(a.date) - fromIso(b.date));
+  const firstTime = fromIso(ordered[0].date).getTime();
+  const lastTime = fromIso(ordered[ordered.length - 1].date).getTime();
+  const totalDays = Math.max(0, Math.round((lastTime - firstTime) / DAY_MS));
+  const span = state.chartSpanDays;
+  const maxOffset = span ? Math.max(0, totalDays - span) : 0;
+  state.chartOffsetDays = Math.max(0, Math.min(maxOffset, state.chartOffsetDays));
+  if (!span) return { visible: ordered, maxOffset, totalDays };
+
+  const endTime = lastTime - state.chartOffsetDays * DAY_MS;
+  const startTime = endTime - span * DAY_MS;
+  const visible = ordered.filter((sample) => {
+    const time = fromIso(sample.date).getTime();
+    return time >= startTime && time <= endTime;
+  });
+  return { visible, maxOffset, totalDays };
+}
+
+function metricChart(series, metric) {
+  if (series.length < 2) {
     return el("div", { class: "empty", text: "Not enough readings yet for a chart." });
   }
+  const values = series.map((sample) => Number(sample[metric.key]));
   const min = Math.min(...values);
   const max = Math.max(...values);
-  const range = max - min || 1;
-  const px = (i) => 16 + i * (304 / (values.length - 1));
-  const py = (v) => 110 - ((v - min) / range) * 90;
+  const rawRange = max - min;
+  const padding = rawRange ? rawRange * 0.08 : Math.max(Math.abs(max) * 0.02, 1);
+  const low = min - padding;
+  const high = max + padding;
+  const range = high - low;
+  const left = 42;
+  const right = 372;
+  const top = 18;
+  const bottom = 228;
+  const firstTime = fromIso(series[0].date).getTime();
+  const lastTime = fromIso(series[series.length - 1].date).getTime();
+  const timeRange = lastTime - firstTime || DAY_MS;
+  const px = (sample) => left + ((fromIso(sample.date).getTime() - firstTime) / timeRange) * (right - left);
+  const py = (value) => bottom - ((value - low) / range) * (bottom - top);
+  const points = series
+    .map((sample) => `${px(sample).toFixed(1)},${py(Number(sample[metric.key])).toFixed(1)}`)
+    .join(" ");
+  const area = `M${series
+    .map((sample) => `${px(sample).toFixed(1)} ${py(Number(sample[metric.key])).toFixed(1)}`)
+    .join(" L")} L${right} ${bottom} L${left} ${bottom} Z`;
+  const children = [];
 
-  const points = values.map((v, i) => `${px(i).toFixed(1)},${py(v).toFixed(1)}`).join(" ");
-  const area = `M${values.map((v, i) => `${px(i).toFixed(1)} ${py(v).toFixed(1)}`).join(" L")} L320 110 L16 110 Z`;
-
-  return svgEl(
-    "svg",
-    { width: "100%", height: "130", viewBox: "0 0 326 130", preserveAspectRatio: "none", style: "margin-top:8px" },
-    [
-      svgEl("line", { x1: 16, y1: 110, x2: 320, y2: 110, stroke: "var(--color-neutral-700)", "stroke-width": 1 }),
-      svgEl("line", { x1: 16, y1: 60, x2: 320, y2: 60, stroke: "var(--color-neutral-800)", "stroke-width": 1 }),
-      svgEl("line", { x1: 16, y1: 15, x2: 320, y2: 15, stroke: "var(--color-neutral-800)", "stroke-width": 1 }),
-      svgEl("path", { d: area, fill: "var(--color-accent-900)", opacity: "0.5" }),
-      svgEl("polyline", { points, fill: "none", stroke: "var(--color-accent)", "stroke-width": 2 }),
-      svgEl("circle", {
-        cx: px(values.length - 1).toFixed(1),
-        cy: py(values[values.length - 1]).toFixed(1),
-        r: 3.5,
-        fill: "var(--color-accent-200)",
-      }),
-    ]
+  for (let i = 0; i <= 4; i += 1) {
+    const value = high - (i / 4) * range;
+    const y = top + (i / 4) * (bottom - top);
+    children.push(
+      svgEl("line", { x1: left, y1: y, x2: right, y2: y, class: "chart-grid" }),
+      svgEl("text", { x: left - 9, y: y + 4, class: "chart-label", "text-anchor": "end" }, [
+        document.createTextNode(value.toFixed(metric.key === "visceral" ? 0 : 1)),
+      ])
+    );
+  }
+  for (let i = 0; i <= 4; i += 1) {
+    const time = firstTime + (i / 4) * timeRange;
+    const x = left + (i / 4) * (right - left);
+    const iso = toIso(new Date(time));
+    children.push(
+      svgEl("line", { x1: x, y1: top, x2: x, y2: bottom, class: "chart-grid chart-grid--vertical" }),
+      svgEl("text", {
+        x, y: 255, class: "chart-label", "text-anchor": i === 0 ? "start" : i === 4 ? "end" : "middle",
+      }, [document.createTextNode(fmtChartDate(iso))])
+    );
+  }
+  children.push(
+    svgEl("path", { d: area, class: "chart-area" }),
+    svgEl("polyline", { points, class: "chart-line" })
   );
+  const pointStep = Math.max(1, Math.ceil(series.length / 60));
+  series.forEach((sample, index) => {
+    if (index % pointStep !== 0 && index !== series.length - 1) return;
+    const circle = svgEl("circle", {
+      cx: px(sample).toFixed(1),
+      cy: py(Number(sample[metric.key])).toFixed(1),
+      r: index === series.length - 1 ? 4 : 2.2,
+      class: index === series.length - 1 ? "chart-point chart-point--last" : "chart-point",
+    }, [
+      svgEl("title", {}, [
+        document.createTextNode(`${fmtChartDate(sample.date)} · ${Number(sample[metric.key]).toFixed(1)} ${metric.unit}`),
+      ]),
+    ]);
+    children.push(circle);
+  });
+
+  return svgEl("svg", {
+    class: "detail-chart",
+    viewBox: "0 0 380 270",
+    role: "img",
+    "aria-label": `${metric.label} from ${fmtChartDate(series[0].date)} to ${fmtChartDate(series[series.length - 1].date)}`,
+  }, children);
 }
 
 function stepsRing(steps, goal) {
@@ -689,8 +863,14 @@ function openCounterModal(counter) {
   state.modal = "counter";
   state.editId = counter ? counter.id : null;
   state.form = counter
-    ? { name: counter.name, date: counter.date, icon: counter.icon, on_dash: !!counter.on_dash }
-    : { name: "", date: toIso(new Date()), icon: "prohibit", on_dash: false };
+    ? {
+        name: counter.name, date: counter.date, icon: counter.icon, on_dash: !!counter.on_dash,
+        icon_query: "", icon_touched: true,
+      }
+    : {
+        name: "", date: toIso(new Date()), icon: "prohibit", on_dash: false,
+        icon_query: "", icon_touched: false,
+      };
   render();
 }
 
@@ -757,11 +937,14 @@ function screenWeight() {
   const d = data();
   const metric = d.metrics.find((m) => m.key === state.metric) || d.metrics[0];
   const series = metricSeries(metric.key);
-  const values = series.map((s) => s[metric.key]);
   const last = series[series.length - 1];
   const prev = series[series.length - 2];
   const weights = metricSeries("weight");
   const lastWeight = weights[weights.length - 1];
+  const window = chartWindow(series);
+  const shown = window.visible;
+  const shownFirst = shown[0];
+  const shownLast = shown[shown.length - 1];
 
   const children = [
     el("div", { class: "screen-head" }, [
@@ -790,11 +973,48 @@ function screenWeight() {
           ? el("span", { class: "tag tag-accent", text: delta(last[metric.key], prev[metric.key], metric.unit) })
           : null,
       ]),
-      metricChart(values),
-      series.length > 1
-        ? el("div", { class: "chart-axis" }, [
-            el("span", { text: fmtShort(series[0].date) }),
-            el("span", { text: fmtShort(last.date) }),
+      el("div", { class: "chart-toolbar" }, [
+        el("div", { class: "chart-ranges", role: "group", "aria-label": "Chart time range" },
+          [
+            [180, "6M"], [365, "1Y"], [1095, "3Y"], [0, "All"],
+          ].map(([days, label]) =>
+            el("button", {
+              class: `chart-range${state.chartSpanDays === days ? " on" : ""}`,
+              type: "button",
+              text: label,
+              onclick: () => {
+                state.chartSpanDays = days;
+                state.chartOffsetDays = 0;
+                render();
+              },
+            })
+          )
+        ),
+        shownFirst && shownLast
+          ? el("span", {
+              class: "chart-summary",
+              text: `${shown.length} readings · ${fmtChartDate(shownFirst.date)} – ${fmtChartDate(shownLast.date)}`,
+            })
+          : null,
+      ]),
+      metricChart(shown, metric),
+      state.chartSpanDays && window.maxOffset > 0
+        ? el("div", { class: "chart-slider-wrap" }, [
+            el("span", { text: "Older" }),
+            el("input", {
+              class: "chart-slider",
+              type: "range",
+              min: "0",
+              max: String(window.maxOffset),
+              step: "1",
+              value: String(window.maxOffset - state.chartOffsetDays),
+              "aria-label": "Slide chart through history",
+              oninput: (event) => {
+                state.chartOffsetDays = window.maxOffset - Number(event.target.value);
+                render();
+              },
+            }),
+            el("span", { text: "Latest" }),
           ])
         : null,
     ]),
@@ -1100,7 +1320,7 @@ function screenSettings() {
               el("span", { style: "margin-left:4px", text: "Connected" }),
             ])
           : el("span", { class: "tag tag-neutral", text: "Not configured" }),
-        el("div", { style: "display:flex;gap:8px" }, [
+        el("div", { class: "telegram-actions" }, [
           el("button", { class: "btn btn-primary", type: "submit", style: "min-height:40px", text: "Save" }),
           el("button", {
             class: "btn btn-secondary", type: "button", style: "min-height:40px", text: "Send test",
@@ -1108,8 +1328,20 @@ function screenSettings() {
               await api("/api/telegram/test", { method: "POST" });
             }, "Test message sent"),
           }),
+          el("button", {
+            class: "btn btn-secondary", type: "button", style: "min-height:40px", text: "Back up data",
+            onclick: () => guard(async () => {
+              const result = await api("/api/telegram/backup", { method: "POST" });
+              const size = (result.bytes / (1024 * 1024)).toFixed(2);
+              toast(`Backup sent · ${result.files} files · ${size} MB`);
+            }),
+          }),
         ]),
       ]),
+      el("div", {
+        class: "muted-sm",
+        text: "Back up data sends a ZIP of the complete /data folder to your chat ID, or to the default chat.",
+      }),
       el("label", { class: "field" }, [
         el("span", { text: "My chat ID (overrides default for my reminders)" }),
         el("input", {
@@ -1419,13 +1651,16 @@ function renderModal() {
     const form = state.form;
     return backdrop(
       el("form", {
-        class: "dialog",
+        class: "dialog dialog--counter",
         onsubmit: (event) => {
           event.preventDefault();
           if (!form.name.trim()) { toast("Give the counter a name", true); return; }
           guard(async () => {
             const path = state.editId ? `/api/counters/${state.editId}` : "/api/counters";
-            await api(path, { method: state.editId ? "PUT" : "POST", body: form });
+            await api(path, {
+              method: state.editId ? "PUT" : "POST",
+              body: { name: form.name, date: form.date, icon: form.icon, on_dash: form.on_dash },
+            });
             close();
             await refresh();
           }, "Counter saved");
@@ -1436,7 +1671,14 @@ function renderModal() {
           el("span", { text: "Name" }),
           el("input", {
             class: "input", value: form.name, maxlength: "60", placeholder: "e.g. No alcohol", required: true,
-            oninput: (event) => { form.name = event.target.value; },
+            oninput: (event) => {
+              form.name = event.target.value;
+              if (!form.icon_touched) {
+                const suggested = rankCounterIcons(form.name, 1)[0];
+                form.icon = suggested?.name || "prohibit";
+              }
+              updateCounterIconPicker(form);
+            },
           }),
         ]),
         el("label", { class: "field" }, [
@@ -1448,15 +1690,16 @@ function renderModal() {
         ]),
         el("div", { class: "field" }, [
           el("span", { text: "Icon" }),
-          el("div", { class: "swatch-row", role: "radiogroup", "aria-label": "Icon" },
-            data().counter_icons.map((name) =>
-              el("button", {
-                class: `swatch${form.icon === name ? " on" : ""}`, type: "button",
-                role: "radio", "aria-checked": String(form.icon === name), "aria-label": name,
-                onclick: () => { form.icon = name; render(); },
-              }, [icon(name)])
-            )
-          ),
+          el("input", {
+            class: "input icon-search", type: "search", value: form.icon_query,
+            placeholder: "Search icons — sleep, gym, money…",
+            "aria-label": "Search icons",
+            oninput: (event) => {
+              form.icon_query = event.target.value;
+              updateCounterIconPicker(form);
+            },
+          }),
+          el("div", { class: "icon-picker-results" }, counterIconResults(form)),
         ]),
         el("button", {
           class: `check-row${form.on_dash ? " on" : ""}`, type: "button",

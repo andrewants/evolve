@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.4.0
+
+- Expand days-since counters to a curated library of 140 locally bundled
+  Phosphor icons, with one consistent visual style and no CDN dependency.
+- Add instant icon search with human-readable names and keywords.
+- Rank and automatically select relevant icon suggestions while a new
+  counter name is typed; manual icon choices are preserved.
+
+## 2.3.0
+
+- Replace the compact body-composition sparkline with a detailed,
+  time-proportional chart, dated axes, reading counts and 6-month, 1-year,
+  3-year and all-history views.
+- Add a timeline slider for moving fixed-length chart windows through years
+  of imported measurements.
+- Send the complete body-measurement history to the browser instead of only
+  the latest 120 samples.
+- Add an authenticated Telegram backup action that ZIPs the complete `/data`
+  folder and sends it as a document to the member or default bot chat.
+
 ## 2.2.1
 
 - Add the required `repository.yaml` descriptor so current Home Assistant

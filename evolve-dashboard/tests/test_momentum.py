@@ -24,6 +24,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
+from backup import create_data_backup  # noqa: E402
+from counter_icons import COUNTER_ICON_CATALOG, COUNTER_ICONS  # noqa: E402
 from integrations import Hevy, HomeAssistant, Telegram, normalise_workout  # noqa: E402
 from scheduler import Scheduler  # noqa: E402
 from server import Api, Handler, Sessions, Settings, Throttle  # noqa: E402
@@ -73,6 +75,14 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(os.stat(self.path).st_mode & 0o777, 0o600)
 
     # -- counters -------------------------------------------------------
+
+    def test_counter_icon_catalog_is_large_unique_and_searchable(self) -> None:
+        self.assertGreaterEqual(len(COUNTER_ICON_CATALOG), 120)
+        self.assertEqual(len(COUNTER_ICONS), len(set(COUNTER_ICONS)))
+        smoke = next(item for item in COUNTER_ICON_CATALOG if item["name"] == "cigarette-slash")
+        self.assertIn("smoking", smoke["keywords"])
+        counter = self.store.save_counter(self.uid, {"name": "Quit smoking", "icon": "cigarette-slash"}, None)
+        self.assertEqual(counter["icon"], "cigarette-slash")
 
     def test_counter_days_and_reset_keeps_best(self) -> None:
         counter = self.store.save_counter(
@@ -591,7 +601,65 @@ class IntegrationClientTests(unittest.TestCase):
         bot = Telegram("")
         self.assertFalse(bot.configured)
         self.assertEqual(bot.send("1", "hi"), (False, "no bot token"))
+        self.assertEqual(bot.send_document("1", "backup.zip", b"zip"), (False, "no bot token"))
         self.assertEqual(bot.updates(0), ([], 0))
+
+    def test_telegram_sends_zip_as_multipart_document(self) -> None:
+        import integrations
+
+        received = {}
+
+        class Bot(BaseHTTPRequestHandler):
+            def do_POST(self):  # noqa: N802
+                length = int(self.headers["Content-Length"])
+                received["path"] = self.path
+                received["type"] = self.headers["Content-Type"]
+                received["body"] = self.rfile.read(length)
+                body = json.dumps({"ok": True, "result": {"document": {}}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        base = self.stub(Bot)
+        original = integrations.TELEGRAM_API
+        integrations.TELEGRAM_API = base
+        try:
+            ok, error = Telegram("secret").send_document(
+                "-100123", "momentum backup.zip", b"PK-test-data", "Momentum backup"
+            )
+            self.assertTrue(ok)
+            self.assertIsNone(error)
+            self.assertEqual(received["path"], "/botsecret/sendDocument")
+            self.assertIn("multipart/form-data; boundary=", received["type"])
+            self.assertIn(b'name="chat_id"\r\n\r\n-100123', received["body"])
+            self.assertIn(b'filename="momentum_backup.zip"', received["body"])
+            self.assertIn(b"PK-test-data", received["body"])
+        finally:
+            integrations.TELEGRAM_API = original
+
+
+class BackupTests(unittest.TestCase):
+    def test_data_backup_includes_nested_files_and_ignores_symlinks_and_temp_files(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            os.mkdir(os.path.join(folder, "nested"))
+            with open(os.path.join(folder, "momentum.json"), "wb") as handle:
+                handle.write(b'{"history":"complete"}')
+            with open(os.path.join(folder, "nested", "extra.db"), "wb") as handle:
+                handle.write(b"extra")
+            with open(os.path.join(folder, ".momentum-write.tmp"), "wb") as handle:
+                handle.write(b"partial")
+            os.symlink(os.path.join(folder, "momentum.json"), os.path.join(folder, "linked.json"))
+
+            payload, count = create_data_backup(folder)
+            self.assertEqual(count, 2)
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+                self.assertEqual(sorted(archive.namelist()), ["momentum.json", "nested/extra.db"])
+                self.assertEqual(archive.read("momentum.json"), b'{"history":"complete"}')
 
 
 class ZeppLifeTests(unittest.TestCase):
@@ -713,6 +781,7 @@ class ApiTests(unittest.TestCase):
             ("/api/bootstrap", "GET"),
             ("/api/counters", "POST"),
             ("/api/settings", "PUT"),
+            ("/api/telegram/backup", "POST"),
             ("/api/sync/hevy", "POST"),
         ]:
             status, _ = self.call(path, method, {} if method != "GET" else None, cookie=False)
@@ -837,6 +906,19 @@ class ApiTests(unittest.TestCase):
         sample = next(item for item in boot["weight_samples"] if item["date"] == "2031-03-04")
         self.assertEqual(sample["weight"], 70.2)
         self.assertEqual(sample["fat"], 20.1)
+
+    def test_bootstrap_returns_complete_weight_history(self) -> None:
+        self.sign_in()
+        _, boot = self.call("/api/bootstrap")
+        start = date(2010, 1, 1)
+        samples = [
+            {"date": (start + timedelta(days=index)).isoformat(), "weight": 80 - index / 100}
+            for index in range(150)
+        ]
+        self.store.merge_weight_samples(boot["me"]["id"], samples)
+        _, refreshed = self.call("/api/bootstrap")
+        dates = {sample["date"] for sample in refreshed["weight_samples"]}
+        self.assertTrue({sample["date"] for sample in samples}.issubset(dates))
 
     # -- transport ------------------------------------------------------
 

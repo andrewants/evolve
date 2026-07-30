@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -369,6 +370,75 @@ class Telegram:
             self._url("sendMessage"),
             payload={"chat_id": str(chat_id), "text": text, "parse_mode": "HTML"},
         )
+        if status == 200 and isinstance(payload, dict) and payload.get("ok"):
+            return True, None
+        reason = "unreachable" if status == 0 else f"HTTP {status}"
+        if isinstance(payload, dict) and payload.get("description"):
+            reason = str(payload["description"])
+        return False, reason
+
+    def send_document(
+        self,
+        chat_id: str,
+        filename: str,
+        content: bytes,
+        caption: str = "",
+    ) -> tuple[bool, str | None]:
+        """Send a binary document using Telegram's multipart endpoint."""
+        if not self.configured:
+            return False, "no bot token"
+        if not chat_id:
+            return False, "no chat id"
+
+        boundary = f"momentum-{uuid.uuid4().hex}"
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename) or "momentum-backup.zip"
+        chunks: list[bytes] = []
+
+        def field(name: str, value: str) -> None:
+            chunks.extend([
+                f"--{boundary}\r\n".encode(),
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+                value.encode(),
+                b"\r\n",
+            ])
+
+        field("chat_id", str(chat_id))
+        if caption:
+            field("caption", caption)
+        chunks.extend([
+            f"--{boundary}\r\n".encode(),
+            (
+                'Content-Disposition: form-data; name="document"; '
+                f'filename="{safe_name}"\r\n'
+            ).encode(),
+            b"Content-Type: application/zip\r\n\r\n",
+            content,
+            b"\r\n",
+            f"--{boundary}--\r\n".encode(),
+        ])
+        request = urllib.request.Request(
+            self._url("sendDocument"),
+            data=b"".join(chunks),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                status = response.status
+                try:
+                    payload = json.loads(response.read() or b"null")
+                except ValueError:
+                    payload = None
+        except urllib.error.HTTPError as error:
+            status = error.code
+            try:
+                payload = json.loads(error.read() or b"null")
+            except ValueError:
+                payload = None
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as error:
+            LOGGER.debug("Telegram document upload failed: %s", error)
+            return False, "unreachable"
+
         if status == 200 and isinstance(payload, dict) and payload.get("ok"):
             return True, None
         reason = "unreachable" if status == 0 else f"HTTP {status}"

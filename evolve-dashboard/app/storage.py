@@ -19,19 +19,12 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any
 
+from counter_icons import COUNTER_ICONS
+
 SCHEMA_VERSION = 3
 
 PIN_ITERATIONS = 200_000
 MAX_JOURNAL_ENTRIES = 1000
-
-COUNTER_ICONS = [
-    "prohibit",
-    "wine",
-    "hamburger",
-    "coffee",
-    "device-mobile",
-    "currency-dollar",
-]
 
 # Body-composition metrics the Mi scale exposes, in the order the Weight
 # screen shows them. `key` doubles as the sample field and the chip id.

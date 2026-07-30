@@ -29,9 +29,11 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
+from backup import create_data_backup
 from integrations import Hevy, HomeAssistant, Telegram, parse_iso_day
 from scheduler import Scheduler
-from storage import COUNTER_ICONS, METRICS, Store, days_since, today_iso
+from counter_icons import COUNTER_ICON_CATALOG
+from storage import METRICS, Store, days_since, today_iso
 from zepp import parse_zepp_life_export
 
 LOGGER = logging.getLogger("momentum")
@@ -43,7 +45,7 @@ MAX_IMPORT_BYTES = 128 * 1024 * 1024
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.4.0"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
@@ -210,6 +212,7 @@ class Api:
             Route("PUT", r"/api/settings", self.update_settings),
             Route("PUT", r"/api/telegram", self.update_telegram),
             Route("POST", r"/api/telegram/test", self.telegram_test),
+            Route("POST", r"/api/telegram/backup", self.telegram_backup),
             Route("POST", r"/api/bot-users/([\w-]+)/approve", self.approve_bot_user),
             Route("DELETE", r"/api/bot-users/([\w-]+)", self.remove_bot_user),
 
@@ -341,12 +344,12 @@ class Api:
                 for habit in user["habits"]
             ],
             "journal": user["journal"][:60],
-            "weight_samples": samples[-120:],
+            "weight_samples": samples,
             "workouts": user["workouts"],
             "gym_synced_at": user["gym_synced_at"],
             "steps": (user.get("steps") or {}).get(today, 0),
             "metrics": METRICS,
-            "counter_icons": COUNTER_ICONS,
+            "counter_icons": COUNTER_ICON_CATALOG,
             "settings": {
                 "steps_goal": settings["steps_goal"],
                 "weekly_gym_goal": settings["weekly_gym_goal"],
@@ -468,6 +471,39 @@ class Api:
         if not ok:
             return HTTPStatus.BAD_GATEWAY, {"error": error or "send failed"}
         return HTTPStatus.OK, {"ok": True}
+
+    def telegram_backup(self, body: dict, ctx) -> tuple[int, Any]:
+        config = self.store.telegram_config()
+        bot = Telegram(config.get("token", ""))
+        if not bot.configured:
+            return HTTPStatus.BAD_REQUEST, {"error": "Set a bot token first"}
+
+        user = self.store.user(ctx.user_id)
+        target = (
+            str(body.get("chat_id") or "")
+            or user["settings"].get("telegram_chat_id")
+            or config.get("default_chat")
+        )
+        if not target:
+            return HTTPStatus.BAD_REQUEST, {"error": "No chat ID to send to"}
+
+        archive, file_count = create_data_backup(self.settings.data_dir)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"momentum-backup-{stamp}.zip"
+        ok, error = bot.send_document(
+            target,
+            filename,
+            archive,
+            caption=f"Momentum data backup · {file_count} file{'s' if file_count != 1 else ''}",
+        )
+        if not ok:
+            return HTTPStatus.BAD_GATEWAY, {"error": error or "backup send failed"}
+        return HTTPStatus.OK, {
+            "ok": True,
+            "files": file_count,
+            "bytes": len(archive),
+            "filename": filename,
+        }
 
     def approve_bot_user(self, _body: dict, ctx, bot_user_id: str) -> tuple[int, Any]:
         return _deleted(self.store.set_bot_user_status(bot_user_id, "approved"))

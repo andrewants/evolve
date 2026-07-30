@@ -60,6 +60,18 @@ Add-on options (Configuration tab):
 Everything else is configured in the app's **Settings** tab, because it is
 per-member.
 
+### Days-since counter icons
+
+Open **Manage** beside Days since, then add or edit a counter. Momentum ships
+140 consistent Phosphor icons inside the add-on, so the picker works offline.
+Search by an icon name or related idea such as `sleep`, `gym`, `money`,
+`reading` or `smoking`.
+
+For a new counter, Momentum ranks suggestions live from the name you type and
+selects the strongest match automatically. Choosing an icon yourself stops
+automatic changes, so the manual choice remains selected while you finish
+editing the name.
+
 ### Home Assistant — Mi Body Composition Scale
 
 Settings → **Home Assistant entities**. Prefer the single composite entity
@@ -104,6 +116,11 @@ Existing non-empty HA or Momentum values are preserved; Zepp adds missing
 dates and fills missing metrics on dates already present. Re-importing the
 same export is safe.
 
+The Body composition chart keeps the complete imported history. Choose 6M,
+1Y, 3Y or All above the graph. In a fixed-length view, drag the slider toward
+Older or Latest to move that window through the timeline. Every horizontal
+date label includes the year.
+
 ### Hevy
 
 Settings → **Hevy**. Get an API key from hevy.com → Settings → Developer,
@@ -127,6 +144,11 @@ Settings → **Telegram bot**.
 
 The bot token is stored in `/data` and is never sent back to the browser —
 the UI only learns whether one is set.
+
+Use **Back up data** in the Telegram bot card to create a ZIP containing
+every regular file under `/data` and send it as a Telegram document. Momentum
+uses the signed-in member's chat ID first, then the default chat ID. Symlinks
+and incomplete temporary writes are excluded.
 
 What gets sent:
 
@@ -191,6 +213,7 @@ All routes need the session cookie except `/api/session`, `/api/setup` and
 | `POST`   | `/api/journal`                   | Add an entry                  |
 | `PUT`    | `/api/settings`                  | Goals, reminder, entities     |
 | `POST`   | `/api/telegram/test`             | Send a test message           |
+| `POST`   | `/api/telegram/backup`           | Send `/data` ZIP via Telegram |
 | `POST`   | `/api/sync/hevy`                 | Sync workouts now             |
 | `POST`   | `/api/sync/backfill`             | Import weight history from HA |
 | `POST`   | `/api/import/zepp-life`           | Import a Zepp Life export ZIP |
