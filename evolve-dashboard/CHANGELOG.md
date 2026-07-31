@@ -24,6 +24,15 @@
   Readings synced before this upgrade have no stored time and show a bare
   `Today` until the next sync replaces them.
 
+## 2.4.3
+
+- Make the primary gym streak count consecutive active weeks rather than
+  requiring every week to hit the configurable session goal.
+- Keep consecutive goal-completed weeks as a separate statistic alongside
+  current `sessions / goal` progress.
+- Preserve an active streak during an unfinished week before its first
+  session, just as goal streaks remain open until Sunday.
+
 ## 2.4.2
 
 - Correct Monday-aligned workout buckets so Tuesday–Sunday sessions are no

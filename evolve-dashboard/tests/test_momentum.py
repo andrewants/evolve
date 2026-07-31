@@ -369,6 +369,7 @@ class GymSummaryTests(unittest.TestCase):
         self.assertEqual(summary["counts"][-1], 3)
         self.assertEqual(summary["current_count"], 3)
         self.assertEqual(summary["streak"], 1)
+        self.assertEqual(summary["goal_streak"], 1)
 
     def test_incomplete_current_week_does_not_erase_completed_streak(self) -> None:
         summary = gym_summary(
@@ -385,7 +386,8 @@ class GymSummaryTests(unittest.TestCase):
             "2026-07-31",
         )
         self.assertEqual(summary["current_count"], 1)
-        self.assertEqual(summary["streak"], 2)
+        self.assertEqual(summary["streak"], 3)
+        self.assertEqual(summary["goal_streak"], 2)
 
     def test_streak_uses_full_history_not_only_eight_chart_weeks(self) -> None:
         monday = date.fromisoformat("2026-07-27")
@@ -399,6 +401,7 @@ class GymSummaryTests(unittest.TestCase):
         summary = gym_summary(workouts, 3, "2026-07-31")
         self.assertEqual(len(summary["counts"]), 8)
         self.assertEqual(summary["streak"], 12)
+        self.assertEqual(summary["goal_streak"], 12)
 
     def test_missed_completed_week_breaks_the_streak(self) -> None:
         summary = gym_summary(
@@ -414,6 +417,21 @@ class GymSummaryTests(unittest.TestCase):
             "2026-07-31",
         )
         self.assertEqual(summary["streak"], 1)
+        self.assertEqual(summary["goal_streak"], 1)
+
+    def test_active_streak_is_not_erased_by_a_high_session_goal(self) -> None:
+        monday = date.fromisoformat("2026-07-27")
+        workouts = []
+        for week in range(10):
+            start = monday - timedelta(weeks=week)
+            workouts.extend(
+                {"date": (start + timedelta(days=day)).isoformat()}
+                for day in (0, 1, 2, 3)
+            )
+        summary = gym_summary(workouts, 5, "2026-07-31")
+        self.assertEqual(summary["current_count"], 4)
+        self.assertEqual(summary["streak"], 10)
+        self.assertEqual(summary["goal_streak"], 0)
 
 
 class IntegrationClientTests(unittest.TestCase):
