@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
 from backup import create_data_backup  # noqa: E402
 from counter_icons import COUNTER_ICON_CATALOG, COUNTER_ICONS  # noqa: E402
+from gym import gym_summary  # noqa: E402
 from integrations import Hevy, HomeAssistant, Telegram, normalise_workout  # noqa: E402
 from scheduler import Scheduler  # noqa: E402
 from server import Api, Handler, Sessions, Settings, Throttle  # noqa: E402
@@ -313,6 +314,67 @@ class WorkoutTests(unittest.TestCase):
         })
         self.assertEqual(workout["volume_kg"], 0)
         self.assertEqual(workout["sets"], 2)
+
+
+class GymSummaryTests(unittest.TestCase):
+    def test_current_tuesday_thursday_and_saturday_share_the_current_week(self) -> None:
+        summary = gym_summary(
+            [
+                {"date": "2026-07-28"},
+                {"date": "2026-07-30"},
+                {"date": "2026-08-01"},
+            ],
+            3,
+            "2026-07-31",
+        )
+        self.assertEqual(summary["counts"][-1], 3)
+        self.assertEqual(summary["current_count"], 3)
+        self.assertEqual(summary["streak"], 1)
+
+    def test_incomplete_current_week_does_not_erase_completed_streak(self) -> None:
+        summary = gym_summary(
+            [
+                {"date": "2026-07-30"},
+                {"date": "2026-07-20"},
+                {"date": "2026-07-22"},
+                {"date": "2026-07-24"},
+                {"date": "2026-07-13"},
+                {"date": "2026-07-15"},
+                {"date": "2026-07-17"},
+            ],
+            3,
+            "2026-07-31",
+        )
+        self.assertEqual(summary["current_count"], 1)
+        self.assertEqual(summary["streak"], 2)
+
+    def test_streak_uses_full_history_not_only_eight_chart_weeks(self) -> None:
+        monday = date.fromisoformat("2026-07-27")
+        workouts = []
+        for week in range(12):
+            start = monday - timedelta(weeks=week)
+            workouts.extend(
+                {"date": (start + timedelta(days=day)).isoformat()}
+                for day in (0, 2, 4)
+            )
+        summary = gym_summary(workouts, 3, "2026-07-31")
+        self.assertEqual(len(summary["counts"]), 8)
+        self.assertEqual(summary["streak"], 12)
+
+    def test_missed_completed_week_breaks_the_streak(self) -> None:
+        summary = gym_summary(
+            [
+                {"date": "2026-07-27"},
+                {"date": "2026-07-29"},
+                {"date": "2026-07-31"},
+                {"date": "2026-07-13"},
+                {"date": "2026-07-15"},
+                {"date": "2026-07-17"},
+            ],
+            3,
+            "2026-07-31",
+        )
+        self.assertEqual(summary["streak"], 1)
 
 
 class IntegrationClientTests(unittest.TestCase):

@@ -130,7 +130,11 @@ date label includes the year.
 Settings → **Hevy**. Get an API key from hevy.com → Settings → Developer,
 paste it, and save. Workouts sync on save and then hourly. Volume is
 computed from each set's reps × weight, and the week streak counts
-Monday-aligned weeks that met your sessions-per-week goal.
+Monday-aligned weeks that met your sessions-per-week goal. The complete
+workout history contributes to the streak even though the bar chart shows
+only the latest eight weeks. An unfinished current week does not break a
+streak earned in completed weeks; it joins the streak as soon as its goal is
+met.
 
 The official API requires an active Hevy Pro subscription. The Hevy API key
 is per member, since each person has their own account. Once configured, the

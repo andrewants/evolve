@@ -293,27 +293,14 @@ function updateCounterIconPicker(form) {
   if (container) container.replaceChildren(...counterIconResults(form));
 }
 
-function weekCounts() {
-  // Eight Monday-aligned buckets; the last one is the week in progress.
-  const now = new Date();
-  const monday = new Date(now);
-  monday.setHours(0, 0, 0, 0);
-  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
-
-  const counts = new Array(WEEK_COUNT).fill(0);
-  for (const workout of data().workouts || []) {
-    const diffWeeks = Math.floor((monday - fromIso(workout.date)) / (7 * DAY_MS));
-    const bucket = WEEK_COUNT - 1 - diffWeeks;
-    if (bucket >= 0 && bucket < WEEK_COUNT) counts[bucket] += 1;
-  }
-  return counts;
-}
-
-function gymStreak(counts) {
-  const goal = data().settings.weekly_gym_goal;
-  let streak = 0;
-  for (let i = counts.length - 1; i >= 0 && counts[i] >= goal; i -= 1) streak += 1;
-  return streak;
+function gymStats() {
+  const d = data();
+  return d.gym || {
+    counts: new Array(WEEK_COUNT).fill(0),
+    streak: 0,
+    goal: d.settings.weekly_gym_goal,
+    current_count: 0,
+  };
 }
 
 // ──────────────────────────────────────────────────────────────── charts
@@ -616,8 +603,9 @@ function screenHome() {
   const weights = metricSeries("weight");
   const last = weights[weights.length - 1];
   const prev = weights[weights.length - 2];
-  const counts = weekCounts();
-  const goal = d.settings.weekly_gym_goal;
+  const gym = gymStats();
+  const counts = gym.counts;
+  const goal = gym.goal;
   const pinned = d.affirmations.find((a) => a.pinned) || d.affirmations[0];
   const lastWorkout = d.workouts[0];
   const habitsDone = d.habits.filter((h) => h.done).length;
@@ -711,7 +699,7 @@ function screenHome() {
       }, [
         el("div", { class: "section-label", text: "Gym streak" }),
         el("div", { class: "streak" }, [
-          el("span", { class: "n", text: String(gymStreak(counts)) }),
+          el("span", { class: "n", text: String(gym.streak) }),
           el("span", { class: "u", text: "weeks" }),
         ]),
         el("div", { class: "week-bars" },
@@ -1083,9 +1071,10 @@ function screenWeight() {
 
 function screenGym() {
   const d = data();
-  const counts = weekCounts();
-  const goal = d.settings.weekly_gym_goal;
-  const streak = gymStreak(counts);
+  const gym = gymStats();
+  const counts = gym.counts;
+  const goal = gym.goal;
+  const streak = gym.streak;
   const last = d.workouts[0];
 
   const children = [
@@ -1116,6 +1105,10 @@ function screenGym() {
           ])
         )
       ),
+      el("div", {
+        class: "muted-sm", style: "margin-top:10px",
+        text: `${gym.current_count} of ${goal} sessions this week · the current week stays open until Sunday`,
+      }),
     ]),
   ];
 

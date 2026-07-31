@@ -30,6 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 from backup import create_data_backup
+from gym import gym_summary
 from integrations import Hevy, HomeAssistant, Telegram, parse_iso_day
 from scheduler import Scheduler
 from counter_icons import COUNTER_ICON_CATALOG
@@ -45,7 +46,7 @@ MAX_IMPORT_BYTES = 128 * 1024 * 1024
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.4.1"
+APP_VERSION = "2.4.2"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
@@ -346,6 +347,9 @@ class Api:
             "journal": user["journal"][:60],
             "weight_samples": samples,
             "workouts": user["workouts"],
+            "gym": gym_summary(
+                user["workouts"], settings["weekly_gym_goal"], today
+            ),
             "gym_synced_at": user["gym_synced_at"],
             "steps": (user.get("steps") or {}).get(today, 0),
             "metrics": METRICS,

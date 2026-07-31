@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.4.2
+
+- Correct Monday-aligned workout buckets so Tuesday–Sunday sessions are no
+  longer dropped from the current week or shifted into the wrong week.
+- Keep a completed weekly streak active while the current week is still in
+  progress and below its goal.
+- Calculate the streak from the complete workout history instead of capping it
+  to the eight weeks displayed by the bar chart.
+- Show current-week session progress and clarify that the week remains open
+  through Sunday.
+
 ## 2.4.1
 
 - Parse flat and nested BodyMiScale measurements, including `value`/`state`
