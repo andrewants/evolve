@@ -16,9 +16,10 @@
 - Lift dialogs and the scroller clear of the software keyboard.
 - Ship a web app manifest and home-screen icons, so installing the app gives
   it a real icon, name and standalone launch.
-- Date the last weight reading by recency — `Today 8:22`, `Yesterday`,
+- Date the last weight reading by recency — `Today 08:22`, `Yesterday`,
   `3 days ago` — falling back to the date only once it is over a week old,
   and drop the "Mi Scale via Home Assistant" caption from both weight views.
+- Show every clock time on a 24-hour clock regardless of the device's locale.
 - Keep the time a weight reading was taken, so today's weigh-in can show one.
   Readings synced before this upgrade have no stored time and show a bare
   `Today` until the next sync replaces them.

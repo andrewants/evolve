@@ -153,12 +153,28 @@ const fmtLong = (iso) =>
 const fmtSession = (iso) =>
   fromIso(iso).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 
-/** "8:22" in the device's locale, or null when the source recorded no time. */
+/* 24-hour everywhere, regardless of the device's locale. `hourCycle` rather
+   than `hour12: false`, which some engines read as h24 and render midnight
+   as 24:00. */
+const CLOCK_OPTS = { hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
+
+/** "08:22", or null when the source recorded no time. */
 function fmtClock(at) {
   if (!at) return null;
   const stamp = new Date(at);
   if (Number.isNaN(stamp.getTime())) return null;
-  return stamp.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  return stamp.toLocaleTimeString(undefined, CLOCK_OPTS);
+}
+
+/** "31 Jul, 08:22" — a date the locale orders, on a 24-hour clock. */
+function fmtDateTime(at) {
+  const stamp = new Date(at);
+  if (Number.isNaN(stamp.getTime())) return null;
+  return stamp.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    ...CLOCK_OPTS,
+  });
 }
 
 /** How recent the last reading is.
@@ -1488,7 +1504,7 @@ function screenSettings() {
         icon("barbell", { cls: `icon${s.hevy_configured ? "" : " off"}` }),
         el("div", { class: "grow" }, [
           el("div", { class: "t", text: "Hevy" }),
-          el("div", { class: "s", text: d.gym_synced_at ? `API key · last sync ${new Date(d.gym_synced_at).toLocaleString()}` : "API key · syncs hourly" }),
+          el("div", { class: "s", text: d.gym_synced_at ? `API key · last sync ${fmtDateTime(d.gym_synced_at)}` : "API key · syncs hourly" }),
         ]),
         el("span", { class: s.hevy_configured ? "tag tag-accent" : "tag tag-neutral", text: s.hevy_configured ? "Connected" : "Not set" }),
       ]),
