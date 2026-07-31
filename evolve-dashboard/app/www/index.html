@@ -2,16 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- `maximum-scale`/`user-scalable` are what stop iOS zooming the whole
+         shell on a double tap or a focused field once it is installed to the
+         home screen; `viewport-fit=cover` is what makes the safe-area insets
+         below resolve to anything but zero. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#161826" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Momentum" />
+    <!-- Full-bleed under the Dynamic Island; the shell pads itself back out
+         with env(safe-area-inset-top) so nothing lands under the cutout. -->
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Momentum</title>
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23161826'/%3E%3Cpath d='M7 22l5-7 4 4 9-11' fill='none' stroke='%239184d9' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
     />
+    <link rel="apple-touch-icon" href="icons/icon-180.png" />
+    <!-- Relative throughout, so it resolves under both the ingress token
+         prefix and a bare tunnel host. -->
+    <link rel="manifest" href="manifest.webmanifest" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>

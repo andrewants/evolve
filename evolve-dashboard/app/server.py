@@ -46,7 +46,7 @@ MAX_IMPORT_BYTES = 128 * 1024 * 1024
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.4.2"
+APP_VERSION = "2.5.0"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
@@ -857,6 +857,10 @@ class Handler(BaseHTTPRequestHandler):
             content_type = "font/woff2"
         elif target.endswith(".js"):
             content_type = "text/javascript"
+        elif target.endswith(".webmanifest"):
+            # Not in every platform's mimetypes table, and iOS ignores the
+            # manifest outright when it arrives as octet-stream.
+            content_type = "application/manifest+json"
         if content_type and content_type.startswith("text/"):
             content_type = f"{content_type}; charset=utf-8"
 

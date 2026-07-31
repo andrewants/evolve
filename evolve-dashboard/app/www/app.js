@@ -49,6 +49,57 @@ const state = {
 
 const $ = (sel, root = document) => root.querySelector(sel);
 
+/* ── navigation layers
+ *
+ * Installed to the iPhone home screen there is no browser chrome, so the
+ * edge-swipe gesture is the only "back" the app has. Every sub-screen and
+ * dialog therefore pushes a history entry — the swipe (and Android's back
+ * button) then unwinds one layer instead of closing the app outright. The
+ * pushed URL is unchanged, which keeps this safe under the ingress token
+ * prefix.
+ */
+let layerDepth = 0;
+let ignoreNextPop = 0;
+
+function pushLayer() {
+  layerDepth += 1;
+  history.pushState({ momentumLayer: layerDepth }, "");
+}
+
+/** Drop the entry pushed by the matching pushLayer, if we own one. */
+function popLayer() {
+  if (layerDepth === 0) return;
+  layerDepth -= 1;
+  ignoreNextPop += 1;
+  history.back();
+}
+
+/** Collapse every open layer at once — the session ended and the whole UI is
+ *  about to be replaced by the login screen. */
+function unwindLayers() {
+  if (!layerDepth) return;
+  const steps = layerDepth;
+  layerDepth = 0;
+  ignoreNextPop += 1;
+  history.go(-steps);
+}
+
+window.addEventListener("popstate", () => {
+  if (ignoreNextPop > 0) {
+    ignoreNextPop -= 1;
+    return;
+  }
+  if (!layerDepth) return;
+  layerDepth -= 1;
+  if (state.modal) {
+    state.modal = null;
+    state.editId = null;
+  } else if (state.sub) {
+    state.sub = null;
+  }
+  render();
+});
+
 function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props)) {
@@ -634,7 +685,7 @@ function screenHome() {
       el("button", {
         style: "color:var(--color-accent-300);font-size:12px;padding:6px",
         type: "button", text: "Manage",
-        onclick: () => { state.sub = "counters"; render(); },
+        onclick: () => { pushLayer(); state.sub = "counters"; render(); },
       }),
     ]),
   ];
@@ -766,7 +817,7 @@ function screenHome() {
   children.push(
     el("button", {
       class: "card journal-card", type: "button", style: "text-align:left;width:100%",
-      onclick: () => { state.sub = "journal"; render(); },
+      onclick: () => { pushLayer(); state.sub = "journal"; render(); },
     }, [
       el("div", { class: "row-between" }, [
         el("span", { class: "section-label", text: "Journal" }),
@@ -808,7 +859,7 @@ function screenCounters() {
       el("button", {
         class: "btn btn-ghost btn-icon", type: "button", "aria-label": "Back",
         style: "min-width:44px;min-height:44px",
-        onclick: () => { state.sub = null; render(); },
+        onclick: () => { popLayer(); state.sub = null; render(); },
       }, [icon("arrow-left", { size: "18px" })]),
       el("span", { style: "font-family:var(--font-heading);font-size:19px;font-weight:500", text: "Counters" }),
       el("button", {
@@ -843,7 +894,7 @@ function screenCounters() {
               }, [icon("pencil-simple", { size: "18px" })]),
               el("button", {
                 class: "icon-btn", type: "button", "aria-label": `Reset ${counter.name}`,
-                onclick: () => { state.modal = "reset"; state.editId = counter.id; render(); },
+                onclick: () => { pushLayer(); state.modal = "reset"; state.editId = counter.id; render(); },
               }, [icon("arrow-counter-clockwise", { size: "18px" })]),
             ])
           )
@@ -853,6 +904,7 @@ function screenCounters() {
 }
 
 function openCounterModal(counter) {
+  pushLayer();
   state.modal = "counter";
   state.editId = counter ? counter.id : null;
   state.form = counter
@@ -876,7 +928,7 @@ function screenJournal() {
       el("button", {
         class: "btn btn-ghost btn-icon", type: "button", "aria-label": "Back",
         style: "min-width:44px;min-height:44px",
-        onclick: () => { state.sub = null; render(); },
+        onclick: () => { popLayer(); state.sub = null; render(); },
       }, [icon("arrow-left", { size: "18px" })]),
       el("span", { style: "font-family:var(--font-heading);font-size:19px;font-weight:500", text: "Journal" }),
     ]),
@@ -1176,6 +1228,7 @@ function screenAffirm() {
       el("button", {
         class: "btn btn-primary", type: "button", style: "min-height:40px",
         onclick: () => {
+          pushLayer();
           state.modal = "affirm";
           state.editId = null;
           state.form = { text: "" };
@@ -1230,6 +1283,7 @@ function screenAffirm() {
                 el("button", {
                   class: "icon-btn", type: "button", "aria-label": "Edit affirmation",
                   onclick: () => {
+                    pushLayer();
                     state.modal = "affirm";
                     state.editId = item.id;
                     state.form = { text: item.text };
@@ -1422,7 +1476,7 @@ function screenSettings() {
         el("button", {
           class: "btn btn-ghost", type: "button", style: "min-height:36px;padding:6px 10px;font-size:12px",
           text: "Set up",
-          onclick: () => { state.modal = "health"; render(); },
+          onclick: () => { pushLayer(); state.modal = "health"; render(); },
         }),
       ]),
     ]),
@@ -1592,7 +1646,7 @@ function screenSettings() {
         el("button", {
           style: "color:var(--color-accent-300);font-size:13px;padding:6px 0;display:flex;align-items:center;gap:6px",
           type: "button",
-          onclick: () => { state.modal = "member"; state.form = { name: "", pin: "" }; render(); },
+          onclick: () => { pushLayer(); state.modal = "member"; state.form = { name: "", pin: "" }; render(); },
         }, [icon("plus-circle", { size: "16px" }), document.createTextNode("Add member")]),
       ]),
     ]),
@@ -1646,7 +1700,7 @@ async function saveSettingsRaw(patch) {
 
 function renderModal() {
   if (!state.modal) return null;
-  const close = () => { state.modal = null; state.editId = null; render(); };
+  const close = () => { popLayer(); state.modal = null; state.editId = null; render(); };
   const backdrop = (inner) =>
     el("div", {
       class: "dialog-backdrop",
@@ -1657,7 +1711,7 @@ function renderModal() {
     const form = state.form;
     return backdrop(
       el("form", {
-        class: "dialog dialog--counter",
+        class: "dialog",
         onsubmit: (event) => {
           event.preventDefault();
           if (!form.name.trim()) { toast("Give the counter a name", true); return; }
@@ -1832,8 +1886,8 @@ function renderModal() {
           ),
         ]),
         el("input", {
-          class: "input", readonly: true, value: full, "aria-label": "Webhook URL",
-          style: "font-size:12px", onclick: (event) => event.target.select(),
+          class: "input webhook-url", readonly: true, value: full, "aria-label": "Webhook URL",
+          onclick: (event) => event.target.select(),
         }),
         el("div", { class: "muted-sm", text: "Steps and body-mass metrics are ingested. Keep this URL secret — the key in it is the only credential." }),
         el("div", { class: "dialog-actions" }, [
@@ -1855,6 +1909,9 @@ function tabBar() {
         type: "button",
         "aria-current": state.tab === tab.key && !state.sub ? "page" : null,
         onclick: () => {
+          // Switching tabs abandons an open sub-screen, so its history entry
+          // goes with it — otherwise a later back would unwind a dead layer.
+          if (state.sub) popLayer();
           state.tab = tab.key;
           state.sub = null;
           render();
@@ -1923,6 +1980,10 @@ async function loadApp() {
 }
 
 async function loadSession() {
+  unwindLayers();
+  state.modal = null;
+  state.editId = null;
+  state.sub = null;
   try {
     const session = await api("/api/session");
     if (session.setup_required) {
@@ -1941,6 +2002,27 @@ async function loadSession() {
   }
   render();
 }
+
+/* The shell is a fixed, full-height box, so the iOS keyboard slides over it
+ * rather than resizing it and can bury whatever field has focus. visualViewport
+ * is the only thing that reports the covered height; publishing it as a custom
+ * property lets the scroller and the dialogs pad themselves clear of it. */
+const viewport = window.visualViewport;
+if (viewport) {
+  const syncKeyboardInset = () => {
+    const covered = window.innerHeight - viewport.height - viewport.offsetTop;
+    const inset = Math.max(0, Math.round(covered));
+    document.documentElement.style.setProperty("--keyboard-inset", `${inset}px`);
+  };
+  viewport.addEventListener("resize", syncKeyboardInset);
+  viewport.addEventListener("scroll", syncKeyboardInset);
+  syncKeyboardInset();
+}
+
+// Dismissing the keyboard can leave iOS holding the fixed shell scrolled up.
+window.addEventListener("focusout", () => {
+  if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+});
 
 // Coming back to a backgrounded tab should not show a stale "today".
 document.addEventListener("visibilitychange", () => {

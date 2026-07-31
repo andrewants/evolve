@@ -1069,10 +1069,46 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.call("/api/session", "PATCH", {}, cookie=False)[0], 501)
 
     def test_static_assets_are_served(self) -> None:
-        for path in ("/", "/index.html", "/styles.css", "/app.js", "/icons.js", "/fonts/inter.woff2"):
+        for path in (
+            "/",
+            "/index.html",
+            "/styles.css",
+            "/app.js",
+            "/icons.js",
+            "/fonts/inter.woff2",
+            "/manifest.webmanifest",
+            "/icons/icon-180.png",
+            "/icons/icon-192.png",
+            "/icons/icon-512.png",
+            "/icons/icon-maskable-512.png",
+        ):
             with urllib.request.urlopen(self.base + path) as response:
                 self.assertEqual(response.status, 200, path)
                 self.assertTrue(response.read())
+
+    def test_web_app_manifest_is_installable(self) -> None:
+        # iOS drops the manifest unless it arrives as manifest+json, and the
+        # URLs have to stay relative to survive the ingress token prefix.
+        with urllib.request.urlopen(self.base + "/manifest.webmanifest") as response:
+            self.assertEqual(response.headers.get_content_type(), "application/manifest+json")
+            manifest = json.loads(response.read())
+        self.assertEqual(manifest["display"], "standalone")
+        self.assertEqual(manifest["start_url"], "./")
+        for entry in manifest["icons"]:
+            self.assertFalse(entry["src"].startswith("/"), entry["src"])
+            with urllib.request.urlopen(f"{self.base}/{entry['src']}") as response:
+                self.assertEqual(response.headers.get_content_type(), "image/png")
+
+    def test_shell_declares_ios_web_app_metadata(self) -> None:
+        with urllib.request.urlopen(self.base + "/index.html") as response:
+            shell = response.read().decode()
+        # Safe-area insets stay zero without viewport-fit=cover, which is what
+        # puts the header back out from under the Dynamic Island.
+        self.assertIn("viewport-fit=cover", shell)
+        self.assertIn("user-scalable=no", shell)
+        self.assertIn('name="apple-mobile-web-app-capable" content="yes"', shell)
+        self.assertIn('rel="apple-touch-icon"', shell)
+        self.assertIn('rel="manifest"', shell)
 
     def test_security_headers_are_set(self) -> None:
         with urllib.request.urlopen(self.base + "/") as response:

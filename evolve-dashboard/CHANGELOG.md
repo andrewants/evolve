@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.5.0
+
+- Pad the app out of the Dynamic Island and the notch, so screen headers and
+  the sub-screen back buttons are reachable on the home-screen web app.
+- Sit the tab bar flush on the bottom edge at its natural height, instead of
+  floating above a gap with stacked home-indicator padding.
+- Stop iOS zooming the page on double taps and on focused fields: every
+  editable control renders at 16px on touch, and the shell disables the
+  double-tap gesture.
+- Pin the shell so iOS can no longer rubber-band the document and drag the tab
+  bar off the bottom of the screen.
+- Unwind sub-screens and dialogs with the iOS back-swipe gesture and the
+  Android back button.
+- Lift dialogs and the scroller clear of the software keyboard.
+- Ship a web app manifest and home-screen icons, so installing the app gives
+  it a real icon, name and standalone launch.
+
 ## 2.4.2
 
 - Correct Monday-aligned workout buckets so Tuesday–Sunday sessions are no
