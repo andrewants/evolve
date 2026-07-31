@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.5.1
+
+- Sit the tab bar on the true bottom edge of the home-screen web app. Installed
+  with a translucent status bar, iOS resolves `100dvh` as the screen minus the
+  top inset, so the 2.5.0 shell came up exactly one inset short and left a gap
+  below the bar. The shell is now pinned by its edges and no longer derives its
+  height from a viewport unit.
+
 ## 2.5.0
 
 - Pad the app out of the Dynamic Island and the notch, so screen headers and

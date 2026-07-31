@@ -77,16 +77,19 @@ html {
   touch-action: manipulation;
 }
 
-/* Pinned rather than merely `height: 100dvh`: iOS otherwise rubber-bands the
-   document itself, which drags the tab bar up off the bottom edge and leaves
-   the gap under it. Nothing outside #app ever scrolls. */
+/* Pinned on all four edges, and deliberately NOT sized with a viewport unit.
+   Installed to the home screen with a translucent status bar, iOS resolves
+   100dvh as the screen *minus* the top inset, so a dvh-tall shell plus the
+   safe-area padding below left the tab bar floating exactly one inset above
+   the bottom edge. Insets on a fixed box resolve against the real screen, and
+   they also stop iOS rubber-banding the document. Nothing outside #app
+   scrolls. */
 body {
   position: fixed;
   top: 0;
-  left: 0;
   right: 0;
-  height: 100%;
-  height: 100dvh;
+  bottom: 0;
+  left: 0;
   margin: 0;
   overflow: hidden;
   background: var(--color-bg);
