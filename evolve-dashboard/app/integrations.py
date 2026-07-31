@@ -197,7 +197,9 @@ class HomeAssistant:
                 day = datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone().date().isoformat()
             except ValueError:
                 continue
-            by_day[day] = {"date": day, "value": value}
+            # `at` keeps the reading's clock time; the day alone cannot say
+            # when today's weigh-in happened.
+            by_day[day] = {"date": day, "value": value, "at": stamp}
             if isinstance(attributes, dict):
                 by_day[day]["attributes"] = attributes
         result = [by_day[day] for day in sorted(by_day)]
@@ -219,8 +221,10 @@ class HomeAssistant:
             values["weight"] = reading.get("value")
         if values.get("weight") is None:
             return None
+        stamp = reading.get("last_updated") or reading.get("last_changed")
         return {
-            "date": _history_day(reading.get("last_updated") or reading.get("last_changed")),
+            "date": _history_day(stamp),
+            "at": stamp,
             **values,
         }
 
@@ -240,7 +244,7 @@ class HomeAssistant:
             if values.get("weight") is None:
                 values["weight"] = point.get("value")
             if values.get("weight") is not None:
-                samples.append({"date": point["date"], **values})
+                samples.append({"date": point["date"], "at": point.get("at"), **values})
         if samples:
             return samples, None
         if error:

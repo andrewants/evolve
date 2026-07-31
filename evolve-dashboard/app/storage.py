@@ -470,7 +470,10 @@ class Store:
                 return False
             day = sample.get("date") or today_iso()
             _require_day(day)
-            clean = {"date": day}
+            clean: dict[str, Any] = {"date": day}
+            stamp = _clean_stamp(sample.get("at"))
+            if stamp:
+                clean["at"] = stamp
             for key in METRIC_KEYS:
                 value = sample.get(key)
                 clean[key] = None if value is None else _as_float(value)
@@ -498,7 +501,10 @@ class Store:
             for sample in imported:
                 day = str(sample.get("date") or "")
                 _require_day(day)
-                incoming = {"date": day}
+                incoming: dict[str, Any] = {"date": day}
+                stamp = _clean_stamp(sample.get("at"))
+                if stamp:
+                    incoming["at"] = stamp
                 for key in METRIC_KEYS:
                     value = sample.get(key)
                     incoming[key] = None if value is None else _as_float(value)
@@ -514,6 +520,9 @@ class Store:
 
                 merged = dict(existing)
                 changed = False
+                if merged.get("at") is None and incoming.get("at") is not None:
+                    merged["at"] = incoming["at"]
+                    changed = True
                 for key in METRIC_KEYS:
                     if merged.get(key) is None and incoming.get(key) is not None:
                         merged[key] = incoming[key]
@@ -693,6 +702,27 @@ def _require_day(day: str) -> None:
         date.fromisoformat(day)
     except (TypeError, ValueError):
         raise ValueError(f"expected an ISO date (YYYY-MM-DD), got {day!r}") from None
+
+
+def _clean_stamp(value: Any) -> str | None:
+    """Normalise a source timestamp to ISO-8601, or drop it.
+
+    Samples stay keyed by day; `at` is only the moment the reading was taken,
+    kept so the dashboard can put a clock time on today's weight. Sources that
+    carry no timestamp — a Zepp export, a hand-entered day — simply have none,
+    so consumers must treat it as optional.
+    """
+    if not value:
+        return None
+    text = str(value).strip()
+    # A bare "2026-07-31" parses happily to midnight, which would then be
+    # displayed as a real 00:00 weigh-in. A value with no clock has no time.
+    if ":" not in text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        return None
 
 
 def _clean_time(value: Any, fallback: str) -> str:

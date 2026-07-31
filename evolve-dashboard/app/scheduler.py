@@ -105,7 +105,11 @@ class Scheduler:
                 if not reading["ok"] or reading["value"] is None:
                     continue
 
-                sample = {"date": _day_of(reading["last_changed"]), "weight": reading["value"]}
+                sample = {
+                    "date": _day_of(reading["last_changed"]),
+                    "at": reading["last_changed"],
+                    "weight": reading["value"],
+                }
                 for key in METRIC_KEYS:
                     if key == "weight":
                         continue
@@ -145,6 +149,9 @@ class Scheduler:
             }
 
         series: dict[str, dict[str, float]] = {}
+        # Clock times are collected alongside the day-keyed values so a
+        # backfilled reading from today can still show when it was taken.
+        stamps: dict[str, str] = {}
         errors: list[str] = []
         sources: list[str] = []
         if bodymiscale_entity:
@@ -155,6 +162,8 @@ class Scheduler:
                     for key in METRIC_KEYS
                     if (value := sample.get(key)) is not None
                 }
+                if sample.get("at"):
+                    stamps[sample["date"]] = sample["at"]
             if samples:
                 sources.append(bodymiscale_entity)
             elif error:
@@ -168,6 +177,8 @@ class Scheduler:
                 for key in METRIC_KEYS:
                     if current.get(key) is not None:
                         existing.setdefault(key, current[key])
+                if current.get("at"):
+                    stamps.setdefault(current["date"], current["at"])
 
         # Always merge separately mapped sensors too. They are both a fallback
         # for Recorder configurations that omit custom domains and a way to
@@ -182,11 +193,13 @@ class Scheduler:
                 for point in points:
                     if point.get("value") is not None:
                         series.setdefault(point["date"], {}).setdefault(key, point["value"])
+                        if point.get("at"):
+                            stamps.setdefault(point["date"], point["at"])
             elif error:
                 errors.append(error)
 
         imported = [
-            {"date": day, **values}
+            {"date": day, "at": stamps.get(day), **values}
             for day, values in sorted(series.items())
             if values.get("weight") is not None
         ]

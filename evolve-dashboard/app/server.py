@@ -618,7 +618,12 @@ class Api:
                     self.store.record_steps(user["id"], day, int(float(value)))
                     written["steps"] += 1
                 elif "weight" in name or "mass" in name:
-                    self.store.record_weight_sample(user["id"], {"date": day, "weight": value})
+                    self.store.record_weight_sample(
+                        user["id"],
+                        # Health Auto Export sends a full timestamp; `day` is
+                        # only its date half.
+                        {"date": day, "at": point.get("date"), "weight": value},
+                    )
                     written["weight"] += 1
         return HTTPStatus.OK, {"ok": True, "written": written}
 

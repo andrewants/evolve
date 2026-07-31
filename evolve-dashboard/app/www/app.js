@@ -153,6 +153,33 @@ const fmtLong = (iso) =>
 const fmtSession = (iso) =>
   fromIso(iso).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 
+/** "8:22" in the device's locale, or null when the source recorded no time. */
+function fmtClock(at) {
+  if (!at) return null;
+  const stamp = new Date(at);
+  if (Number.isNaN(stamp.getTime())) return null;
+  return stamp.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
+/** How recent the last reading is.
+ *
+ * A bare date says nothing useful about a reading taken this morning, so the
+ * first week is phrased in relative terms — with a clock time while it is
+ * still today — and only older readings fall back to the date, by which point
+ * *when* it was taken matters more than *how long ago*.
+ */
+function fmtUpdated(sample, today) {
+  // fromIso builds local midnights, so rounding absorbs any DST hour.
+  const days = Math.round((fromIso(today) - fromIso(sample.date)) / DAY_MS);
+  if (days <= 0) {
+    const time = fmtClock(sample.at);
+    return time ? `Today ${time}` : "Today";
+  }
+  if (days === 1) return "Yesterday";
+  if (days <= 7) return `${days} days ago`;
+  return `Updated ${fmtShort(sample.date)}`;
+}
+
 function delta(current, previous, unit) {
   if (current === null || previous === null || current === undefined || previous === undefined) return "—";
   const diff = current - previous;
@@ -727,9 +754,7 @@ function screenHome() {
           : el("div", { class: "weight-value" }, [el("span", { class: "big", text: "—" })]),
         el("div", {
           class: "weight-meta",
-          text: last
-            ? `Updated ${fmtShort(last.date)} · Mi Scale via Home Assistant`
-            : "Connect a scale entity in Settings",
+          text: last ? fmtUpdated(last, d.today) : "Connect a scale entity in Settings",
         }),
       ]),
       last ? sparkline(weights.slice(-12).map((s) => s.weight)) : null,
@@ -997,8 +1022,8 @@ function screenWeight() {
       el("div", {
         class: "sub",
         text: lastWeight
-          ? `Mi Scale via Home Assistant · synced ${fmtShort(lastWeight.date)}`
-          : "Mi Scale via Home Assistant · not connected",
+          ? fmtUpdated(lastWeight, d.today)
+          : "Not connected — map a scale entity in Settings",
       }),
     ]),
 

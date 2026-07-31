@@ -165,6 +165,45 @@ class StoreTests(unittest.TestCase):
         dates = [s["date"] for s in self.store.user(self.uid)["weight_samples"]]
         self.assertEqual(dates, sorted(dates))
 
+    def test_weight_sample_keeps_the_reading_time(self) -> None:
+        # The dashboard puts a clock time on today's weight, so the moment the
+        # reading was taken has to survive alongside the day it belongs to.
+        self.store.record_weight_sample(
+            self.uid, {"date": DAY(0), "at": "2026-07-31T08:22:11+01:00", "weight": 71.8}
+        )
+        sample = self.store.user(self.uid)["weight_samples"][0]
+        self.assertEqual(sample["date"], DAY(0))
+        self.assertEqual(sample["at"], "2026-07-31T08:22:11+01:00")
+
+    def test_weight_sample_drops_a_timestamp_carrying_no_clock(self) -> None:
+        # A bare date parses to midnight, which would show as a 00:00 weigh-in.
+        for stamp in ("2026-07-31", "  2026-07-31  ", "not a date", "", None):
+            self.store.record_weight_sample(
+                self.uid, {"date": DAY(0), "at": stamp, "weight": 71.8}
+            )
+            sample = self.store.user(self.uid)["weight_samples"][0]
+            self.assertNotIn("at", sample, f"{stamp!r} should not become a time")
+
+    def test_imported_history_fills_a_missing_reading_time(self) -> None:
+        self.store.record_weight_sample(self.uid, {"date": "2025-01-17", "weight": 74.9})
+        result = self.store.merge_weight_samples(
+            self.uid, [{"date": "2025-01-17", "at": "2025-01-17T07:05:00+00:00", "weight": 75.1}]
+        )
+        self.assertEqual(result["updated"], 1, "gaining a time counts as enrichment")
+        sample = self.store.user(self.uid)["weight_samples"][0]
+        self.assertEqual(sample["at"], "2025-01-17T07:05:00+00:00")
+        self.assertEqual(sample["weight"], 74.9, "existing weight still wins")
+
+    def test_imported_history_does_not_overwrite_a_known_reading_time(self) -> None:
+        self.store.record_weight_sample(
+            self.uid, {"date": "2025-01-17", "at": "2025-01-17T07:05:00+00:00", "weight": 74.9}
+        )
+        self.store.merge_weight_samples(
+            self.uid, [{"date": "2025-01-17", "at": "2025-01-17T19:40:00+00:00", "weight": 75.1}]
+        )
+        sample = self.store.user(self.uid)["weight_samples"][0]
+        self.assertEqual(sample["at"], "2025-01-17T07:05:00+00:00")
+
     def test_workout_storage_does_not_truncate_history(self) -> None:
         workouts = [{"id": str(index), "date": DAY(index)} for index in range(250)]
         self.assertTrue(self.store.replace_workouts(self.uid, workouts))
@@ -1013,6 +1052,24 @@ class ApiTests(unittest.TestCase):
         _, boot = self.call("/api/bootstrap")
         self.assertEqual(boot["steps"], 8930)
 
+    def test_health_webhook_keeps_the_weigh_in_time(self) -> None:
+        # Health Auto Export sends a full timestamp; only its date half was
+        # being kept, leaving nothing to show for a reading taken today.
+        self.sign_in()
+        _, boot = self.call("/api/bootstrap")
+        status, payload = self.call(boot["integrations"]["health_webhook_path"], "POST", {
+            "data": {"metrics": [
+                {"name": "weight_body_mass",
+                 "data": [{"date": f"{DAY(0)} 08:22:15 +0000", "qty": 71.8}]},
+            ]},
+        }, cookie=False)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["written"]["weight"], 1)
+        _, boot = self.call("/api/bootstrap")
+        sample = boot["weight_samples"][-1]
+        self.assertEqual(sample["date"], DAY(0))
+        self.assertTrue(sample["at"].startswith(f"{DAY(0)}T08:22:15"), sample["at"])
+
     def test_zepp_life_import_requires_auth_and_merges_history(self) -> None:
         archive = zepp_zip(
             "time,weight,height,bmi,fatRate,bodyWaterRate,boneMass,metabolism,muscleRate,visceralFat\n"
@@ -1223,6 +1280,28 @@ class SchedulerTests(unittest.TestCase):
         logging.getLogger("momentum.scheduler").setLevel(logging.CRITICAL)
         self.addCleanup(logging.getLogger("momentum.scheduler").setLevel, logging.NOTSET)
         self.scheduler._guard("weight", boom)  # must not raise
+
+    def test_hourly_sync_keeps_the_reading_time_from_home_assistant(self) -> None:
+        # The hourly sync is what feeds today's weight, so its `last_changed`
+        # is the timestamp the dashboard's "Today 8:22" actually comes from.
+        class FakeHomeAssistant:
+            available = True
+
+            @staticmethod
+            def state(_entity):
+                return {
+                    "ok": True,
+                    "value": 71.8,
+                    "last_changed": "2026-07-31T08:22:11+01:00",
+                }
+
+        uid = self.user["id"]
+        self.store.update_user_settings(uid, {"entities": {"weight": "sensor.mi_scale_weight"}})
+        scheduler = Scheduler(self.store, FakeHomeAssistant(), Settings())
+        self.assertEqual(scheduler.sync_weight(), 1)
+        sample = self.store.user(uid)["weight_samples"][-1]
+        self.assertEqual(sample["weight"], 71.8)
+        self.assertEqual(sample["at"], "2026-07-31T08:22:11+01:00")
 
     def test_bodymiscale_backfill_uses_current_state_when_recorder_is_empty(self) -> None:
         class FakeHomeAssistant:
