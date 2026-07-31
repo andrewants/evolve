@@ -565,7 +565,13 @@ class Store:
             if "weekly_gym_goal" in patch:
                 settings["weekly_gym_goal"] = _clamp_int(patch["weekly_gym_goal"], 1, 7, settings["weekly_gym_goal"])
             if "hevy_key" in patch:
-                settings["hevy_key"] = str(patch["hevy_key"] or "").strip()[:200]
+                replacement = str(patch["hevy_key"] or "").strip()[:200]
+                # Password fields are intentionally blank after load. Submitting
+                # that placeholder state must not erase a previously saved key.
+                if replacement:
+                    settings["hevy_key"] = replacement
+            if patch.get("clear_hevy_key") is True:
+                settings["hevy_key"] = ""
             if "telegram_chat_id" in patch:
                 settings["telegram_chat_id"] = str(patch["telegram_chat_id"] or "").strip()[:40]
             if isinstance(patch.get("reminder"), dict):

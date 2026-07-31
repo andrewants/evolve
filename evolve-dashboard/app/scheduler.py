@@ -126,40 +126,86 @@ class Scheduler:
                     self.store.record_steps(user["id"], today_iso(), int(steps["value"]))
         return written
 
-    def backfill_weight(self, user_id: str) -> int:
+    def backfill_weight(self, user_id: str) -> dict:
         """Pull all body-composition history retained by the HA recorder."""
         user = self.store.user(user_id)
-        if user is None or not self.hass.available:
-            return 0
+        if user is None:
+            return {"found": 0, "added": 0, "updated": 0, "unchanged": 0, "errors": ["Member not found"]}
+        if not self.hass.available:
+            return {
+                "found": 0, "added": 0, "updated": 0, "unchanged": 0,
+                "errors": ["Home Assistant API is unavailable"],
+            }
         entities = user["settings"]["entities"]
         bodymiscale_entity = entities.get("bodymiscale")
         if not bodymiscale_entity and not entities.get("weight"):
-            return 0
+            return {
+                "found": 0, "added": 0, "updated": 0, "unchanged": 0,
+                "errors": ["Configure a BodyMiScale or weight entity first"],
+            }
 
         series: dict[str, dict[str, float]] = {}
+        errors: list[str] = []
+        sources: list[str] = []
         if bodymiscale_entity:
-            for sample in self.hass.bodymiscale_history(bodymiscale_entity):
+            samples, error = self.hass.bodymiscale_history_result(bodymiscale_entity)
+            for sample in samples:
                 series[sample["date"]] = {
                     key: value
                     for key in METRIC_KEYS
                     if (value := sample.get(key)) is not None
                 }
-        else:
-            for key in METRIC_KEYS:
-                entity = entities.get(key)
-                if not entity:
-                    continue
-                for point in self.hass.history(entity):
-                    series.setdefault(point["date"], {})[key] = point["value"]
+            if samples:
+                sources.append(bodymiscale_entity)
+            elif error:
+                errors.append(error)
 
-        written = 0
-        for day, values in sorted(series.items()):
-            if "weight" not in values:
+            # Recorder may exclude a custom composite domain. The current
+            # state still confirms mapping and gives at least today's sample.
+            current = self.hass.bodymiscale_state(bodymiscale_entity)
+            if current is not None:
+                existing = series.setdefault(current["date"], {})
+                for key in METRIC_KEYS:
+                    if current.get(key) is not None:
+                        existing.setdefault(key, current[key])
+
+        # Always merge separately mapped sensors too. They are both a fallback
+        # for Recorder configurations that omit custom domains and a way to
+        # fill metrics absent from older composite states.
+        for key in METRIC_KEYS:
+            entity = entities.get(key)
+            if not entity:
                 continue
-            if self.store.record_weight_sample(user_id, {"date": day, **values}):
-                written += 1
-        LOGGER.info("Backfilled %d weight samples for %s", written, user_id)
-        return written
+            points, error = self.hass.history_result(entity)
+            if points:
+                sources.append(entity)
+                for point in points:
+                    if point.get("value") is not None:
+                        series.setdefault(point["date"], {}).setdefault(key, point["value"])
+            elif error:
+                errors.append(error)
+
+        imported = [
+            {"date": day, **values}
+            for day, values in sorted(series.items())
+            if values.get("weight") is not None
+        ]
+        merged = self.store.merge_weight_samples(user_id, imported)
+        result = {
+            "found": len(imported),
+            **merged,
+            "sources": list(dict.fromkeys(sources)),
+            "errors": list(dict.fromkeys(errors)),
+        }
+        LOGGER.info(
+            "Backfilled weight history for %s: found=%d added=%d updated=%d warnings=%s",
+            user_id,
+            result["found"],
+            result["added"],
+            result["updated"],
+            "; ".join(result["errors"]) or "none",
+        )
+        return result
 
     def sync_hevy(self) -> int:
         synced = 0

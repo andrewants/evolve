@@ -192,6 +192,13 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(samples["2025-01-17"]["water"], 52.3)
         self.assertEqual(samples["2025-01-18"]["weight"], 73.6)
 
+    def test_blank_hevy_password_does_not_erase_saved_key(self) -> None:
+        self.store.update_user_settings(self.uid, {"hevy_key": "saved-secret"})
+        self.store.update_user_settings(self.uid, {"hevy_key": ""})
+        self.assertEqual(self.store.user(self.uid)["settings"]["hevy_key"], "saved-secret")
+        self.store.update_user_settings(self.uid, {"clear_hevy_key": True})
+        self.assertEqual(self.store.user(self.uid)["settings"]["hevy_key"], "")
+
     # -- isolation and durability ---------------------------------------
 
     def test_members_cannot_see_each_others_data(self) -> None:
@@ -443,6 +450,46 @@ class IntegrationClientTests(unittest.TestCase):
         finally:
             integrations.HA_CORE_API = original
 
+    def test_bodymiscale_reads_nested_measurement_objects(self) -> None:
+        import integrations
+
+        class Core(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                body = json.dumps({
+                    "state": "on",
+                    "attributes": {
+                        "measurements": {
+                            "Weight (kg)": {"value": "75.2 kg", "unit": "kg"},
+                            "Body Fat Percentage": {"state": 23.1},
+                        },
+                        "sensors": [
+                            {"name": "Body Water Percentage", "value": 52.0},
+                            {"name": "Visceral Fat Level", "value": 8},
+                        ],
+                    },
+                    "last_updated": "2026-07-28T07:00:00+00:00",
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        base = self.stub(Core)
+        original = integrations.HA_CORE_API
+        integrations.HA_CORE_API = f"{base}/api"
+        try:
+            current = HomeAssistant("token").bodymiscale_state("bodymiscale.andrey")
+            self.assertEqual(current["weight"], 75.2)
+            self.assertEqual(current["fat"], 23.1)
+            self.assertEqual(current["water"], 52.0)
+            self.assertEqual(current["visceral"], 8)
+        finally:
+            integrations.HA_CORE_API = original
+
     def test_hevy_fetches_every_page(self) -> None:
         import integrations
 
@@ -450,6 +497,14 @@ class IntegrationClientTests(unittest.TestCase):
 
         class HevyApi(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
+                if self.path.endswith("/workouts/count"):
+                    body = json.dumps({"workout_count": 23}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 page = int(self.path.split("page=")[1].split("&")[0])
                 pages.append(page)
                 start = (page - 1) * 10
@@ -489,6 +544,14 @@ class IntegrationClientTests(unittest.TestCase):
 
         class HevyApi(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
+                if self.path.endswith("/workouts/count"):
+                    body = json.dumps({"workout_count": 20}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 page = int(self.path.split("page=")[1].split("&")[0])
                 if page == 2:
                     self.send_response(503)
@@ -517,11 +580,14 @@ class IntegrationClientTests(unittest.TestCase):
         base = self.stub(HevyApi)
         original = integrations.HEVY_API
         integrations.HEVY_API = f"{base}/v1"
+        original_sleep = integrations.time.sleep
+        integrations.time.sleep = lambda _seconds: None
         try:
             workouts, error = Hevy("key").workouts()
             self.assertEqual(len(workouts), 10)
-            self.assertEqual(error, "HTTP 503")
+            self.assertEqual(error, "Hevy API returned HTTP 503")
         finally:
+            integrations.time.sleep = original_sleep
             integrations.HEVY_API = original
 
     def test_hevy_reports_a_bad_key(self) -> None:
@@ -542,7 +608,7 @@ class IntegrationClientTests(unittest.TestCase):
         try:
             workouts, error = Hevy("bad-key").workouts()
             self.assertEqual(workouts, [])
-            self.assertEqual(error, "invalid api key")
+            self.assertEqual(error, "Hevy API key is invalid")
         finally:
             integrations.HEVY_API = original
 
@@ -1059,6 +1125,43 @@ class SchedulerTests(unittest.TestCase):
         logging.getLogger("momentum.scheduler").setLevel(logging.CRITICAL)
         self.addCleanup(logging.getLogger("momentum.scheduler").setLevel, logging.NOTSET)
         self.scheduler._guard("weight", boom)  # must not raise
+
+    def test_bodymiscale_backfill_uses_current_state_when_recorder_is_empty(self) -> None:
+        class FakeHomeAssistant:
+            available = True
+
+            @staticmethod
+            def bodymiscale_history_result(_entity):
+                return [], "Recorder has no history for bodymiscale.andrey"
+
+            @staticmethod
+            def bodymiscale_state(_entity):
+                return {
+                    "date": "2026-07-30",
+                    "weight": 75.2,
+                    "fat": 23.1,
+                    "muscle": None,
+                    "bmi": 25.1,
+                    "water": None,
+                    "visceral": None,
+                }
+
+            @staticmethod
+            def history_result(_entity):
+                return [], None
+
+        uid = self.user["id"]
+        self.store.update_user_settings(
+            uid, {"entities": {"bodymiscale": "bodymiscale.andrey"}}
+        )
+        scheduler = Scheduler(self.store, FakeHomeAssistant(), Settings())
+        result = scheduler.backfill_weight(uid)
+        self.assertEqual(result["found"], 1)
+        self.assertEqual(result["added"], 1)
+        self.assertIn("Recorder has no history", result["errors"][0])
+        sample = self.store.user(uid)["weight_samples"][0]
+        self.assertEqual(sample["weight"], 75.2)
+        self.assertEqual(sample["fat"], 23.1)
 
 
 if __name__ == "__main__":

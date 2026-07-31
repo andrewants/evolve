@@ -108,6 +108,11 @@ function delta(current, previous, unit) {
   return `${diff > 0 ? "+" : ""}${diff.toFixed(1)}${unit ? ` ${unit}` : ""}`;
 }
 
+function backfillMessage(result, prefix = "") {
+  const base = `${prefix}found ${result.found} HA day${result.found === 1 ? "" : "s"} · ${result.added} new · ${result.updated} enriched`;
+  return result.errors?.length ? `${base} · ${result.errors[0]}` : base;
+}
+
 function toast(message, isError = false) {
   state.toast = { message, isError };
   render();
@@ -1064,7 +1069,7 @@ function screenWeight() {
               onclick: () => guard(async () => {
                 const result = await api("/api/sync/backfill", { method: "POST" });
                 await refresh();
-                toast(`Imported ${result.samples} readings`);
+                toast(backfillMessage(result));
               }),
             }),
           ]),
@@ -1442,7 +1447,7 @@ function screenSettings() {
           await saveSettingsRaw({ entities });
           const result = await api("/api/sync/backfill", { method: "POST" });
           await refresh();
-          toast(`Saved · imported ${result.samples} readings`);
+          toast(backfillMessage(result, "Saved · "));
         });
       },
     }, [
@@ -1513,7 +1518,9 @@ function screenSettings() {
           await saveSettingsRaw({ hevy_key: key });
           const result = await api("/api/sync/hevy", { method: "POST" });
           await refresh();
-          toast(`Synced ${result.synced} workouts`);
+          if (result.synced) toast(`Synced all ${result.synced} Hevy workouts`);
+          else if (result.preserved) toast(`Hevy returned 0 · kept ${result.preserved} stored workouts`, true);
+          else toast("This Hevy account has no workouts");
         });
       },
     }, [
@@ -1524,7 +1531,13 @@ function screenSettings() {
           placeholder: s.hevy_configured ? "•••••••• (saved — type to replace)" : "From hevy.com → Settings → Developer",
         }),
       ]),
-      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:44px", text: "Save & sync" }),
+      el("div", { class: "muted-sm", text: s.hevy_configured
+        ? "The saved key is retained when this field is left blank."
+        : "Hevy's API requires an active Hevy Pro subscription." }),
+      el("button", {
+        class: "btn btn-primary", type: "submit", style: "min-height:44px",
+        text: s.hevy_configured ? "Sync now" : "Save & sync",
+      }),
     ]),
 
     // ── habits

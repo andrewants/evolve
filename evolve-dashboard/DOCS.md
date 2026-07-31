@@ -96,9 +96,13 @@ each household member maps their own. Only weight is required; the rest
 enrich the Body composition screen.
 
 Saving also imports all history retained by the Home Assistant recorder, so
-your chart is populated immediately. After that the add-on polls every 10 minutes and
-keeps its own copy — which means your history survives the recorder's purge
-window.
+your chart is populated immediately. Nested composite attributes are
+supported. If Recorder does not retain the custom composite entity, Momentum
+imports its current state and also tries any separately mapped metric sensors.
+The import result shows found, new and enriched day counts plus a specific
+warning when Recorder or an entity supplied no usable history. After that the
+add-on polls every 10 minutes and keeps its own copy — which means your history
+survives the recorder's purge window.
 
 The add-on only ever **reads** entities. It never calls services.
 
@@ -128,7 +132,11 @@ paste it, and save. Workouts sync on save and then hourly. Volume is
 computed from each set's reps × weight, and the week streak counts
 Monday-aligned weeks that met your sessions-per-week goal.
 
-The Hevy API key is per member, since each person has their own account.
+The official API requires an active Hevy Pro subscription. The Hevy API key
+is per member, since each person has their own account. Once configured, the
+password field remains blank for security; leave it blank to keep the saved
+key. Momentum fetches and verifies the complete API workout count, and a
+failed or unexpectedly empty sync does not erase workouts already stored.
 
 ### Telegram
 
@@ -231,8 +239,9 @@ entity in Settings → Home Assistant entities, then save.
 **Save & import history** to backfill from the recorder, or wait for more
 weigh-ins.
 
-**Hevy says "invalid api key".** The key is wrong or revoked — regenerate
-it at hevy.com → Settings → Developer.
+**Hevy says the key is invalid or access is forbidden.** Regenerate the key
+at hevy.com → Settings → Developer and confirm that the account has an active
+Hevy Pro subscription.
 
 **Nobody appears under Bot users.** They must message the bot first, and
 the token must be saved. Polling runs every 60 seconds. Note that Telegram

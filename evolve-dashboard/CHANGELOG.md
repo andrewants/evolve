@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.4.1
+
+- Parse flat and nested BodyMiScale measurements, including `value`/`state`
+  objects and common weight, fat, water, muscle and visceral-fat aliases.
+- Fall back to the composite entity's current state and any separately mapped
+  metric sensors when Recorder has no composite history.
+- Report how many Home Assistant days were found, added and enriched, with an
+  actionable Recorder or entity warning instead of a silent zero.
+- Preserve a saved Hevy key when its blank password field is submitted.
+- Verify paginated Hevy results against the API workout count, retry temporary
+  failures and never erase stored workouts when a sync returns no data.
+
 ## 2.4.0
 
 - Expand days-since counters to a curated library of 140 locally bundled

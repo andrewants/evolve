@@ -45,7 +45,7 @@ MAX_IMPORT_BYTES = 128 * 1024 * 1024
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.4.1"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
@@ -555,11 +555,19 @@ class Api:
         workouts, error = Hevy(key).workouts()
         if error:
             return HTTPStatus.BAD_GATEWAY, {"error": error}
-        self.store.replace_workouts(ctx.user_id, workouts)
-        return HTTPStatus.OK, {"synced": len(workouts)}
+        existing = len(user.get("workouts") or [])
+        if workouts:
+            self.store.replace_workouts(ctx.user_id, workouts)
+        return HTTPStatus.OK, {
+            "synced": len(workouts),
+            "preserved": existing if not workouts else 0,
+        }
 
     def backfill(self, _body: dict, ctx) -> tuple[int, Any]:
-        return HTTPStatus.OK, {"samples": self.scheduler.backfill_weight(ctx.user_id)}
+        result = self.scheduler.backfill_weight(ctx.user_id)
+        if not result["found"] and result["errors"]:
+            return HTTPStatus.BAD_GATEWAY, {"error": "; ".join(result["errors"]), **result}
+        return HTTPStatus.OK, result
 
     def import_zepp_life(self, body: dict, ctx) -> tuple[int, Any]:
         archive = body.get("archive")

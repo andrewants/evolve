@@ -30,12 +30,12 @@ HA_CACHE_TTL = 20
 HA_HISTORY_START = "1970-01-01T00:00:00+00:00"
 
 BODYMISCALE_ATTRIBUTES = {
-    "weight": ("weight",),
-    "fat": ("body_fat", "fat", "bodyfat"),
-    "muscle": ("muscle_mass", "muscle"),
+    "weight": ("weight", "weight_kg", "body_weight", "mass"),
+    "fat": ("body_fat", "fat", "bodyfat", "fat_percentage", "body_fat_percentage"),
+    "muscle": ("muscle_mass", "muscle", "muscle_kg"),
     "bmi": ("bmi",),
-    "water": ("water", "body_water"),
-    "visceral": ("visceral_fat", "visceral"),
+    "water": ("water", "body_water", "water_percentage", "body_water_percentage"),
+    "visceral": ("visceral_fat", "visceral", "visceral_fat_level"),
 }
 
 
@@ -137,14 +137,28 @@ class HomeAssistant:
         *,
         include_attributes: bool = False,
     ) -> list[dict[str, Any]]:
+        points, _error = self.history_result(
+            entity_id, days, include_attributes=include_attributes
+        )
+        return points
+
+    def history_result(
+        self,
+        entity_id: str,
+        days: int | None = None,
+        *,
+        include_attributes: bool = False,
+    ) -> tuple[list[dict[str, Any]], str | None]:
         """Daily last-value series for one entity, oldest first.
 
         Used to backfill body-composition history from the recorder. The
         recorder purges on its own schedule, which is exactly why samples
         get copied into our own store once seen.
         """
-        if not self.available or not entity_id:
-            return []
+        if not self.available:
+            return [], "Home Assistant API is unavailable"
+        if not entity_id:
+            return [], "Entity is not configured"
         start = (
             (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
             if days is not None
@@ -156,11 +170,24 @@ class HomeAssistant:
             f"?filter_entity_id={urllib.parse.quote(entity_id)}{flags}"
         )
         status, payload = _request(url, headers=self._headers, timeout=120)
-        if status != 200 or not isinstance(payload, list) or not payload:
-            return []
+        if status != 200:
+            return [], (
+                "Home Assistant history API is unreachable"
+                if status == 0
+                else f"Home Assistant history API returned HTTP {status}"
+            )
+        if not isinstance(payload, list):
+            return [], "Home Assistant history API returned an unexpected response"
+        if not payload:
+            return [], f"Recorder has no history for {entity_id}"
 
         by_day: dict[str, dict[str, Any]] = {}
-        for point in payload[0]:
+        groups = payload if all(isinstance(group, list) for group in payload) else [payload]
+        raw_points = 0
+        for point in (point for group in groups for point in group):
+            if not isinstance(point, dict):
+                continue
+            raw_points += 1
             value = _to_float(point.get("state"))
             stamp = point.get("last_changed") or point.get("last_updated")
             attributes = point.get("attributes") if include_attributes else None
@@ -173,7 +200,13 @@ class HomeAssistant:
             by_day[day] = {"date": day, "value": value}
             if isinstance(attributes, dict):
                 by_day[day]["attributes"] = attributes
-        return [by_day[day] for day in sorted(by_day)]
+        result = [by_day[day] for day in sorted(by_day)]
+        if not result:
+            return [], (
+                f"Recorder returned {raw_points} states for {entity_id}, "
+                "but none contained usable timestamps or measurements"
+            )
+        return result, None
 
     def bodymiscale_state(self, entity_id: str) -> dict[str, Any] | None:
         """Return one complete sample from a legacy composite BodyMiScale entity."""
@@ -193,14 +226,29 @@ class HomeAssistant:
 
     def bodymiscale_history(self, entity_id: str) -> list[dict[str, Any]]:
         """Return all daily composite samples retained by Home Assistant Recorder."""
+        samples, _error = self.bodymiscale_history_result(entity_id)
+        return samples
+
+    def bodymiscale_history_result(
+        self, entity_id: str
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Return composite history plus a diagnostic when no samples can be parsed."""
         samples: list[dict[str, Any]] = []
-        for point in self.history(entity_id, include_attributes=True):
+        points, error = self.history_result(entity_id, include_attributes=True)
+        for point in points:
             values = _bodymiscale_values(point.get("attributes"))
             if values.get("weight") is None:
                 values["weight"] = point.get("value")
             if values.get("weight") is not None:
                 samples.append({"date": point["date"], **values})
-        return samples
+        if samples:
+            return samples, None
+        if error:
+            return [], error
+        return [], (
+            f"Recorder returned {len(points)} daily states for {entity_id}, "
+            "but no weight was present in the state or attributes"
+        )
 
 
 def _entity_unavailable(entity_id: str, reason: str) -> dict[str, Any]:
@@ -232,20 +280,39 @@ def _to_float(value: Any) -> float | None:
 
 
 def _bodymiscale_values(attributes: Any) -> dict[str, float | None]:
-    attributes = attributes if isinstance(attributes, dict) else {}
-    # Older BodyMiScale versions sometimes nest the calculated values.
-    nested = attributes.get("sensors")
-    sources = [attributes, nested] if isinstance(nested, dict) else [attributes]
+    """Read known measurements from flat or nested BodyMiScale attributes."""
+    flattened: dict[str, Any] = {}
+
+    def collect(value: Any, depth: int = 0, parent_key: str = "") -> None:
+        if depth > 4:
+            return
+        if isinstance(value, dict):
+            # Some BodyMiScale releases expose measurements as
+            # {"weight": {"value": 75.2, "unit": "kg"}} or as a list of
+            # {"name": "weight", "value": 75.2} records.
+            scalar = value.get("value", value.get("state"))
+            label = value.get("name") or value.get("key") or value.get("type") or parent_key
+            label = re.sub(r"[^a-z0-9]+", "_", str(label).lower()).strip("_")
+            if label and not isinstance(scalar, (dict, list)):
+                flattened.setdefault(label, scalar)
+            for key, item in value.items():
+                normalised = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+                if normalised and not isinstance(item, (dict, list)):
+                    flattened.setdefault(normalised, item)
+                collect(item, depth + 1, normalised)
+        elif isinstance(value, list):
+            for item in value[:100]:
+                collect(item, depth + 1, parent_key)
+
+    collect(attributes)
     values: dict[str, float | None] = {}
     for metric, aliases in BODYMISCALE_ATTRIBUTES.items():
         values[metric] = None
-        for source in sources:
-            for alias in aliases:
-                parsed = _to_float(source.get(alias))
-                if parsed is not None:
-                    values[metric] = parsed
-                    break
-            if values[metric] is not None:
+        for alias in aliases:
+            normalised = re.sub(r"[^a-z0-9]+", "_", alias.lower()).strip("_")
+            parsed = _to_float(flattened.get(normalised))
+            if parsed is not None:
+                values[metric] = parsed
                 break
     return values
 
@@ -279,27 +346,91 @@ class Hevy:
         if not self.configured:
             return [], "no api key"
 
+        headers = {"api-key": self._key, "Accept": "application/json"}
+        count_status, count_payload = self._get("/workouts/count", headers)
+        if count_status in (401, 403):
+            return [], _hevy_error(count_status, count_payload)
+        expected_count: int | None = None
+        if count_status == 200 and isinstance(count_payload, dict):
+            try:
+                expected_count = max(0, int(count_payload.get("workout_count")))
+            except (TypeError, ValueError):
+                expected_count = None
+
         collected: list[dict[str, Any]] = []
+        rejected = 0
+        raw_count = 0
         page = 1
         while True:
-            status, payload = _request(
-                f"{HEVY_API}/workouts?page={page}&pageSize={page_size}",
-                headers={"api-key": self._key, "Accept": "application/json"},
+            status, payload = self._get(
+                f"/workouts?page={page}&pageSize={page_size}", headers
             )
-            if status == 401:
-                return [], "invalid api key"
+            if status in (401, 403):
+                return [], _hevy_error(status, payload)
             if status != 200 or not isinstance(payload, dict):
-                return collected, "unreachable" if status == 0 else f"HTTP {status}"
+                return collected, _hevy_error(status, payload)
 
-            batch = payload.get("workouts") or []
-            collected.extend(normalise_workout(w) for w in batch)
-            page_count = payload.get("page_count")
-            if not batch or len(batch) < page_size or (
-                isinstance(page_count, int) and page >= page_count
-            ):
+            batch = payload.get("workouts")
+            if not isinstance(batch, list):
+                return collected, "Hevy returned an unexpected workouts response"
+            raw_count += len(batch)
+            for workout in batch:
+                normalised = normalise_workout(workout)
+                if normalised is None:
+                    rejected += 1
+                else:
+                    collected.append(normalised)
+
+            try:
+                page_count = int(payload.get("page_count"))
+            except (TypeError, ValueError):
+                page_count = None
+            if page_count is not None:
+                done = page >= page_count
+            elif expected_count is not None:
+                done = raw_count >= expected_count
+            else:
+                done = not batch or len(batch) < page_size
+            if done:
                 break
             page += 1
-        return [w for w in collected if w], None
+            if page > 10_000:
+                return collected, "Hevy pagination exceeded the safety limit"
+
+        if expected_count is not None and raw_count < expected_count:
+            return collected, f"Hevy returned only {raw_count} of {expected_count} workouts"
+        if raw_count and rejected:
+            return collected, f"Hevy returned {rejected} workout records Momentum could not parse"
+        return collected, None
+
+    def _get(
+        self, path: str, headers: dict[str, str]
+    ) -> tuple[int, Any]:
+        """Retry transient Hevy failures without hiding a permanent error."""
+        result = (0, None)
+        for attempt in range(3):
+            result = _request(f"{HEVY_API}{path}", headers=headers, timeout=30)
+            if result[0] not in (0, 429, 500, 502, 503, 504):
+                break
+            if attempt < 2:
+                time.sleep(attempt + 1)
+        return result
+
+
+def _hevy_error(status: int, payload: Any) -> str:
+    if isinstance(payload, dict):
+        detail = payload.get("error") or payload.get("message") or payload.get("description")
+        if detail:
+            return f"Hevy: {detail}"
+    if status == 0:
+        return "Hevy API is unreachable"
+    if status == 401:
+        return "Hevy API key is invalid"
+    if status == 403:
+        return "Hevy API access requires an active Hevy Pro subscription"
+    if status == 429:
+        return "Hevy API rate limit reached; try again shortly"
+    return f"Hevy API returned HTTP {status}"
 
 
 def normalise_workout(raw: dict[str, Any]) -> dict[str, Any] | None:
