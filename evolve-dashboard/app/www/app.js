@@ -298,6 +298,7 @@ function gymStats() {
   return d.gym || {
     counts: new Array(WEEK_COUNT).fill(0),
     streak: 0,
+    goal_streak: 0,
     goal: d.settings.weekly_gym_goal,
     current_count: 0,
   };
@@ -705,7 +706,7 @@ function screenHome() {
         el("div", { class: "week-bars" },
           counts.map((count) =>
             el("i", {
-              class: count >= goal ? "on" : "",
+              class: count >= goal ? "goal" : count > 0 ? "active" : "",
               style: `height:${Math.max(4, Math.min(22, count * 5))}px`,
             })
           )
@@ -1085,10 +1086,10 @@ function screenGym() {
     el("div", { class: "card streak-card" }, [
       el("div", { class: "row-between" }, [
         el("div", {}, [
-          el("div", { class: "section-label", text: "Week streak" }),
+          el("div", { class: "section-label", text: "Training streak" }),
           el("div", { style: "display:flex;align-items:baseline;gap:6px;margin-top:4px" }, [
             el("span", { class: "big", text: String(streak) }),
-            el("span", { style: "font-size:13px;color:var(--color-neutral-400)", text: `weeks ≥ ${goal}` }),
+            el("span", { style: "font-size:13px;color:var(--color-neutral-400)", text: "weeks active" }),
           ]),
         ]),
         icon("flame", { fill: true, cls: "icon flame" }),
@@ -1097,7 +1098,7 @@ function screenGym() {
         counts.map((count, index) =>
           el("div", {}, [
             el("div", {
-              class: `bar${count >= goal ? " on" : ""}`,
+              class: `bar${count >= goal ? " goal" : count > 0 ? " active" : ""}`,
               style: `height:${Math.max(6, Math.min(48, count * 11))}px`,
               title: `${count} session${count === 1 ? "" : "s"}`,
             }),
@@ -1107,7 +1108,9 @@ function screenGym() {
       ),
       el("div", {
         class: "muted-sm", style: "margin-top:10px",
-        text: `${gym.current_count} of ${goal} sessions this week · the current week stays open until Sunday`,
+        text: `${gym.current_count} of ${goal} sessions this week · ${
+          gym.current_count >= goal ? "weekly goal reached" : `${goal - gym.current_count} to goal`
+        } · goal streak ${gym.goal_streak ?? 0} week${gym.goal_streak === 1 ? "" : "s"}`,
       }),
     ]),
   ];
