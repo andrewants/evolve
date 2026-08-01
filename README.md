@@ -77,11 +77,16 @@ self-hosted instead, so the app works offline and under a strict CSP.
 ### iPhone home-screen app
 
 The app is built to be installed with **Share → Add to Home Screen** and run
-standalone. `viewport-fit=cover` puts it under the Dynamic Island and the home
-indicator, and `env(safe-area-inset-*)` pads every edge back out from
-`:root` — so nothing lands under the cutout and the tab bar sits flush on the
-bottom edge. The shell is a fixed, full-height box with a single internal
-scroller, which is what keeps iOS from rubber-banding the tab bar off-screen.
+standalone. It deliberately does **not** use `viewport-fit=cover` or the
+translucent status bar: together they make iOS lay the standalone app out from
+the top of the screen while still sizing the viewport a status bar short, which
+leaves everything anchored to the bottom floating that far above the edge and
+`env(safe-area-inset-bottom)` reporting nonsense. Without them iOS insets the
+web view itself, the insets resolve to zero, and the tab bar — the last item in
+the shell column — sits flush on the bottom edge. The `env(safe-area-inset-*)`
+padding stays wired up in `:root` for browsers that do hand the page a
+full-bleed viewport. The shell is a fixed, full-height box with a single
+internal scroller, which is what keeps iOS from rubber-banding it off-screen.
 Page zoom is off (`user-scalable=no` plus `touch-action: manipulation`), so
 every editable control is bumped to 16px on a coarse pointer — below that iOS
 zooms on focus with no way back. Sub-screens and dialogs push a history entry

@@ -53,14 +53,17 @@
   --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, 0.55);
   --shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgba(0, 0, 0, 0.65);
 
-  /* `viewport-fit=cover` in the shell puts the page under the Dynamic Island
-     and the home indicator, so every edge is padded back out from here. */
+  /* The shell does not ask for `viewport-fit=cover`, so on iOS these are all
+     zero and the system keeps the page inside the safe area for us. They stay
+     wired up for any browser that hands the page a full-bleed viewport anyway
+     (Android edge-to-edge, a future cover), where the padding below is the
+     only thing keeping content off a cutout or a gesture bar. */
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
-  /* 1px top border + 6px padding + 46px tab + a bottom pad that clears the
-     home indicator without stacking dead space on devices that have none. */
+  /* 1px top border + 6px padding + 46px tab + a bottom pad that clears a
+     gesture bar without stacking dead space on devices that have none. */
   --tabbar-h: calc(53px + max(8px, var(--safe-bottom)));
   /* Height the software keyboard currently covers — see the visualViewport
      listener in app.js. Zero whenever the keyboard is closed. */
@@ -71,18 +74,19 @@
 
 html {
   height: 100%;
+  /* iOS paints the status bar and the home-indicator strip outside the web
+     view in the document's background colour, so it is set here too. */
+  background: var(--color-bg);
   -webkit-text-size-adjust: 100%;
   /* Kills the iOS double-tap-to-zoom delay and gesture; rapid taps on habits,
      the keypad and the tab bar were zooming the page instead of registering. */
   touch-action: manipulation;
 }
 
-/* Pinned on all four edges, and deliberately NOT sized with a viewport unit.
-   Installed to the home screen with a translucent status bar, iOS resolves
-   100dvh as the screen *minus* the top inset, so a dvh-tall shell plus the
-   safe-area padding below left the tab bar floating exactly one inset above
-   the bottom edge. Insets on a fixed box resolve against the real screen, and
-   they also stop iOS rubber-banding the document. Nothing outside #app
+/* Pinned on all four edges, and deliberately NOT sized with a viewport unit:
+   iOS resolves 100dvh against a viewport it is happy to get wrong, while
+   top/bottom on a fixed box always land on the real edges of the web view.
+   Pinning also stops iOS rubber-banding the document. Nothing outside #app
    scrolls. */
 body {
   position: fixed;
@@ -237,10 +241,9 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
   flex: 1;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  /* The tab bar is lifted out of flow and pinned to the viewport, so the
-     scroller runs underneath it and reserves its height as tail padding —
-     plus room to scroll a focused field out from under the keyboard. */
-  padding: 8px 16px calc(var(--tabbar-h) + 20px + var(--keyboard-inset));
+  /* The tab bar is a flow sibling below, so only the tail gap and room to
+     scroll a focused field out from under the keyboard are reserved here. */
+  padding: 8px 16px calc(20px + var(--keyboard-inset));
   overscroll-behavior: contain;
 }
 
@@ -584,28 +587,23 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
 
 /* ───────────────────────────────────────────────────────────── tab bar */
 
-/* Pinned to the viewport's own bottom edge rather than riding along as the
-   last item in #app. As a flex child it was only flush if the shell's height
-   was exactly right, and iOS standalone gets several viewport metrics wrong
-   in ways that left it floating an inset above the bottom. Anchored here its
-   position cannot depend on the shell's height at all.
+/* The last item in the #app column, which is itself pinned to all four edges
+   of the web view — so the bar sits on the bottom edge without depending on a
+   viewport unit, a fixed-position quirk or an inset resolving correctly. It
+   is `flex: none` because the scroller above it is greedy.
 
-   left/right + margin auto keeps it centred on the same 430px column as #app.
-   The only padding below the labels is the home-indicator inset itself, so
-   the bar is no taller than it has to be. */
+   The only padding below the labels is a gesture-bar inset, zero on iOS now
+   that the system reserves that strip itself, so the bar is no taller than it
+   has to be. */
 .tabbar {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  flex: none;
+  position: relative;
   z-index: 20;
-  margin: 0 auto;
-  max-width: calc(430px + var(--safe-left) + var(--safe-right));
   background: var(--color-neutral-900);
   border-top: 1px solid var(--color-neutral-700);
   display: flex;
   height: var(--tabbar-h);
-  padding: 6px calc(8px + var(--safe-right)) max(8px, var(--safe-bottom)) calc(8px + var(--safe-left));
+  padding: 6px 8px max(8px, var(--safe-bottom));
 }
 .tab {
   flex: 1; display: flex; flex-direction: column; align-items: center;

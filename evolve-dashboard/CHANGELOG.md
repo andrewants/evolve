@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.5.3
+
+- Put the tab bar on the actual bottom edge of the home-screen web app. The
+  gap under it was never a CSS measurement: `viewport-fit=cover` plus the
+  translucent status bar made iOS lay the standalone app out from the top of
+  the screen while still sizing the viewport a status bar short, so anything
+  anchored to the bottom — flow item or fixed box — floated that far above the
+  edge, and `env(safe-area-inset-bottom)` came back wrong on top of it. The
+  shell no longer asks for either, so iOS insets the web view itself, the
+  insets resolve to zero and the bar is flush at its natural height.
+
 ## 2.5.2
 
 - Pin the tab bar to the viewport's own bottom edge instead of carrying it as

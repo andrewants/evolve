@@ -4,20 +4,30 @@
     <meta charset="utf-8" />
     <!-- `maximum-scale`/`user-scalable` are what stop iOS zooming the whole
          shell on a double tap or a focused field once it is installed to the
-         home screen; `viewport-fit=cover` is what makes the safe-area insets
-         below resolve to anything but zero. -->
+         home screen.
+
+         Deliberately NO `viewport-fit=cover`: with it (plus the translucent
+         status bar below) iOS lays the standalone web app out from the very
+         top of the screen but still sizes the viewport as screen minus the
+         top inset, so everything anchored to the bottom — flow item or fixed
+         box alike — floated one status-bar height above the bottom edge, and
+         env(safe-area-inset-bottom) came back wrong on top of that. Without
+         it iOS insets the web view itself: the viewport ends exactly at the
+         home indicator, the insets are all zero, and the bar is flush. -->
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
     />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#161826" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-title" content="Momentum" />
-    <!-- Full-bleed under the Dynamic Island; the shell pads itself back out
-         with env(safe-area-inset-top) so nothing lands under the cutout. -->
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <!-- `black`, not `black-translucent`: the translucent style is what puts
+         the page under the status bar, and iOS mis-sizes the viewport when it
+         does. iOS keeps the status bar and the home-indicator strip to itself
+         and fills them with the page background, which is already this dark. -->
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <title>Momentum</title>
     <link
       rel="icon"
