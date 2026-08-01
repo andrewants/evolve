@@ -11,6 +11,7 @@ import json
 import io
 import logging
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -1220,10 +1221,17 @@ class ApiTests(unittest.TestCase):
     def test_shell_declares_ios_web_app_metadata(self) -> None:
         with urllib.request.urlopen(self.base + "/index.html") as response:
             shell = response.read().decode()
-        # Safe-area insets stay zero without viewport-fit=cover, which is what
-        # puts the header back out from under the Dynamic Island.
-        self.assertIn("viewport-fit=cover", shell)
-        self.assertIn("user-scalable=no", shell)
+        # `viewport-fit=cover` plus a translucent status bar is what made iOS
+        # lay the standalone app out from the top of the screen while sizing
+        # the viewport one status bar short, leaving a gap under the tab bar.
+        # Letting iOS inset the web view itself is what keeps the bar flush.
+        viewport = re.search(r'name="viewport"\s+content="([^"]*)"', shell)
+        assert viewport is not None, shell
+        self.assertNotIn("viewport-fit", viewport.group(1))
+        self.assertIn("user-scalable=no", viewport.group(1))
+        self.assertIn(
+            'name="apple-mobile-web-app-status-bar-style" content="black"', shell
+        )
         self.assertIn('name="apple-mobile-web-app-capable" content="yes"', shell)
         self.assertIn('rel="apple-touch-icon"', shell)
         self.assertIn('rel="manifest"', shell)
