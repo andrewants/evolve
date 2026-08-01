@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.5.2
+
+- Pin the tab bar to the viewport's own bottom edge instead of carrying it as
+  the last item in the app shell. As a flow item it was only flush when the
+  shell's computed height was exactly right, which iOS standalone kept getting
+  wrong in new ways; anchored to the viewport its position cannot depend on the
+  shell at all.
+
 ## 2.5.1
 
 - Sit the tab bar on the true bottom edge of the home-screen web app. Installed

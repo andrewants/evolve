@@ -59,9 +59,9 @@
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
-  /* 6px top padding + 46px tab + a bottom pad that clears the home indicator
-     without stacking dead space on devices that have none. */
-  --tabbar-h: calc(52px + max(8px, var(--safe-bottom)));
+  /* 1px top border + 6px padding + 46px tab + a bottom pad that clears the
+     home indicator without stacking dead space on devices that have none. */
+  --tabbar-h: calc(53px + max(8px, var(--safe-bottom)));
   /* Height the software keyboard currently covers — see the visualViewport
      listener in app.js. Zero whenever the keyboard is closed. */
   --keyboard-inset: 0px;
@@ -237,10 +237,10 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
   flex: 1;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  /* The tab bar is a sibling flex item, so the scroller already stops above
-     it — only enough tail padding to clear the last card, plus room to
-     scroll a focused field out from under the keyboard. */
-  padding: 8px 16px calc(20px + var(--keyboard-inset));
+  /* The tab bar is lifted out of flow and pinned to the viewport, so the
+     scroller runs underneath it and reserves its height as tail padding —
+     plus room to scroll a focused field out from under the keyboard. */
+  padding: 8px 16px calc(var(--tabbar-h) + 20px + var(--keyboard-inset));
   overscroll-behavior: contain;
 }
 
@@ -584,16 +584,28 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
 
 /* ───────────────────────────────────────────────────────────── tab bar */
 
-/* Sits flush on the bottom edge: the only padding below the labels is the
-   home-indicator inset itself, so the bar is no taller than it needs to be
-   and leaves no gap beneath it. */
+/* Pinned to the viewport's own bottom edge rather than riding along as the
+   last item in #app. As a flex child it was only flush if the shell's height
+   was exactly right, and iOS standalone gets several viewport metrics wrong
+   in ways that left it floating an inset above the bottom. Anchored here its
+   position cannot depend on the shell's height at all.
+
+   left/right + margin auto keeps it centred on the same 430px column as #app.
+   The only padding below the labels is the home-indicator inset itself, so
+   the bar is no taller than it has to be. */
 .tabbar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
   z-index: 20;
+  margin: 0 auto;
+  max-width: calc(430px + var(--safe-left) + var(--safe-right));
   background: var(--color-neutral-900);
   border-top: 1px solid var(--color-neutral-700);
-  display: flex; flex: none;
+  display: flex;
   height: var(--tabbar-h);
-  padding: 6px 8px max(8px, var(--safe-bottom));
+  padding: 6px calc(8px + var(--safe-right)) max(8px, var(--safe-bottom)) calc(8px + var(--safe-left));
 }
 .tab {
   flex: 1; display: flex; flex-direction: column; align-items: center;
