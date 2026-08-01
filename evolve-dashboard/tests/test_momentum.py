@@ -433,6 +433,49 @@ class GymSummaryTests(unittest.TestCase):
         self.assertEqual(summary["streak"], 10)
         self.assertEqual(summary["goal_streak"], 0)
 
+    def test_week_start_day_changes_which_week_a_session_counts_for(self) -> None:
+        # Sunday the 26th and Monday the 27th. Evenly spaced sessions land one
+        # per week under any alignment, so only sessions straddling a boundary
+        # tell the two apart: Monday-aligned these fall in consecutive weeks and
+        # read as a 2-week streak, Sunday-aligned they share one week, leaving
+        # the week before empty for a streak of 1. Same log, two answers, which
+        # is why this has to agree with Hevy's setting.
+        sessions = [{"date": "2026-07-26"}, {"date": "2026-07-27"}]
+        monday_aligned = gym_summary(sessions, 1, "2026-07-31", week_start=0)
+        sunday_aligned = gym_summary(sessions, 1, "2026-07-31", week_start=6)
+        self.assertEqual(monday_aligned["streak"], 2)
+        self.assertEqual(sunday_aligned["streak"], 1)
+        self.assertEqual(sunday_aligned["week_start"], 6)
+
+    def test_streak_reports_the_week_it_began_and_the_gap_that_capped_it(self) -> None:
+        monday = date.fromisoformat("2026-07-27")
+        workouts = [{"date": (monday - timedelta(weeks=week)).isoformat()} for week in range(3)]
+        # Nothing in the week of 6 July; an older session proves history reaches
+        # past the gap, so the cap is a real miss rather than the log running out.
+        workouts.append({"date": (monday - timedelta(weeks=4)).isoformat()})
+        summary = gym_summary(workouts, 1, "2026-07-31")
+        self.assertEqual(summary["streak"], 3)
+        self.assertEqual(summary["streak_since"], "2026-07-13")
+        self.assertEqual(summary["streak_broken_week"], "2026-07-06")
+
+    def test_streak_running_to_the_start_of_history_reports_no_gap(self) -> None:
+        monday = date.fromisoformat("2026-07-27")
+        workouts = [{"date": (monday - timedelta(weeks=week)).isoformat()} for week in range(3)]
+        summary = gym_summary(workouts, 1, "2026-07-31")
+        self.assertEqual(summary["streak"], 3)
+        self.assertEqual(summary["streak_since"], "2026-07-13")
+        self.assertIsNone(summary["streak_broken_week"])
+
+    def test_week_start_setting_round_trips_and_is_clamped(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = Store(os.path.join(directory.name, "momentum.json"))
+        uid = store.add_user("Andrew", "1234")["id"]
+        self.assertEqual(store.user(uid)["settings"]["gym_week_start"], 0)
+        self.assertEqual(store.update_user_settings(uid, {"gym_week_start": 6})["gym_week_start"], 6)
+        self.assertEqual(store.update_user_settings(uid, {"gym_week_start": 99})["gym_week_start"], 6)
+        self.assertEqual(store.update_user_settings(uid, {"gym_week_start": "x"})["gym_week_start"], 6)
+
 
 class IntegrationClientTests(unittest.TestCase):
     """Each client is pointed at a local stub rather than the real service."""

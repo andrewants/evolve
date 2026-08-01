@@ -18,6 +18,9 @@ const WEEK_COUNT = 8;
 const SPARK_W = 110;
 const SPARK_H = 48;
 
+// Indexed 0..6 to match Python's weekday(), which the streak buckets use.
+const WEEK_DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
 const TABS = [
   { key: "home", label: "Home", icon: "house" },
   { key: "weight", label: "Weight", icon: "scales" },
@@ -392,6 +395,8 @@ function gymStats() {
   return d.gym || {
     counts: new Array(WEEK_COUNT).fill(0),
     streak: 0,
+    streak_since: null,
+    streak_broken_week: null,
     goal_streak: 0,
     goal: d.settings.weekly_gym_goal,
     current_count: 0,
@@ -1205,6 +1210,16 @@ function screenGym() {
           gym.current_count >= goal ? "weekly goal reached" : `${goal - gym.current_count} to goal`
         } · goal streak ${gym.goal_streak ?? 0} week${gym.goal_streak === 1 ? "" : "s"}`,
       }),
+      // A streak shorter than expected is almost always one empty week rather
+      // than a miscount, so name the weeks involved and it can be checked.
+      gym.streak_since
+        ? el("div", {
+            class: "muted-sm", style: "margin-top:4px",
+            text: gym.streak_broken_week
+              ? `Running since the week of ${fmtShort(gym.streak_since)} · no session logged the week of ${fmtShort(gym.streak_broken_week)}`
+              : `Running since the week of ${fmtShort(gym.streak_since)} — the start of your history`,
+          })
+        : null,
     ]),
   ];
 
@@ -1378,6 +1393,20 @@ function screenSettings() {
           class: "input", type: "number", min: "1", max: "7", value: String(s.weekly_gym_goal),
           onchange: (event) => saveSettings({ weekly_gym_goal: Number(event.target.value) }),
         }),
+      ]),
+      el("label", { class: "field" }, [
+        el("span", { text: "Gym week starts on" }),
+        el("select", {
+          class: "input",
+          onchange: (event) => saveSettings({ gym_week_start: Number(event.target.value) }),
+        }, WEEK_DAYS.map((day, index) =>
+          el("option", {
+            value: String(index),
+            selected: index === (s.gym_week_start ?? 0),
+            text: day,
+          })
+        )),
+        el("small", { class: "muted-sm", text: "Match this to the week start in Hevy, or the two streaks will bucket sessions into different weeks." }),
       ]),
     ]),
 

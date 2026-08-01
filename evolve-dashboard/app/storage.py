@@ -70,6 +70,9 @@ def default_user_settings() -> dict[str, Any]:
     return {
         "steps_goal": 10000,
         "weekly_gym_goal": 3,
+        # 0 = Monday … 6 = Sunday. Hevy makes the same choice configurable, and
+        # both have to agree or the two streaks bucket sessions differently.
+        "gym_week_start": 0,
         "reminder": {"on": False, "time": "08:00"},
         "telegram_chat_id": "",
         "hevy_key": "",
@@ -573,6 +576,10 @@ class Store:
                 settings["steps_goal"] = _clamp_int(patch["steps_goal"], 1000, 60000, settings["steps_goal"])
             if "weekly_gym_goal" in patch:
                 settings["weekly_gym_goal"] = _clamp_int(patch["weekly_gym_goal"], 1, 7, settings["weekly_gym_goal"])
+            if "gym_week_start" in patch:
+                settings["gym_week_start"] = _clamp_int(
+                    patch["gym_week_start"], 0, 6, settings.get("gym_week_start", 0)
+                )
             if "hevy_key" in patch:
                 replacement = str(patch["hevy_key"] or "").strip()[:200]
                 # Password fields are intentionally blank after load. Submitting

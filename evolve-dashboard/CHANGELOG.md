@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.6.0
+
+- Make the gym week's start day configurable, matching the same setting in
+  Hevy. Weeks were hard-coded to Monday, and sessions logged either side of a
+  boundary bucket differently under a different start day, so the two apps
+  could report very different streaks from an identical log.
+- Say when a training streak began and which week ended the previous one, so a
+  streak that looks too short can be checked against the log rather than taken
+  on faith.
+
 ## 2.5.2
 
 - Pin the tab bar to the viewport's own bottom edge instead of carrying it as
