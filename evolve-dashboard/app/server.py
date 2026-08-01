@@ -46,7 +46,7 @@ MAX_IMPORT_BYTES = 128 * 1024 * 1024
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.6.1"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
@@ -351,7 +351,7 @@ class Api:
                 user["workouts"],
                 settings["weekly_gym_goal"],
                 today,
-                week_start=settings.get("gym_week_start", 0),
+                week_start=settings.get("gym_week_start", 6),
             ),
             "gym_synced_at": user["gym_synced_at"],
             "steps": (user.get("steps") or {}).get(today, 0),
@@ -360,6 +360,7 @@ class Api:
             "settings": {
                 "steps_goal": settings["steps_goal"],
                 "weekly_gym_goal": settings["weekly_gym_goal"],
+                "gym_week_start": settings.get("gym_week_start", 6),
                 "reminder": settings["reminder"],
                 "telegram_chat_id": settings["telegram_chat_id"],
                 "entities": settings["entities"],

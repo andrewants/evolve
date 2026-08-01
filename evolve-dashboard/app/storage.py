@@ -70,9 +70,10 @@ def default_user_settings() -> dict[str, Any]:
     return {
         "steps_goal": 10000,
         "weekly_gym_goal": 3,
-        # 0 = Monday … 6 = Sunday. Hevy makes the same choice configurable, and
-        # both have to agree or the two streaks bucket sessions differently.
-        "gym_week_start": 0,
+        # 0 = Monday … 6 = Sunday. Hevy makes the same choice configurable and
+        # defaults to Sunday, and both have to agree or the two streaks bucket
+        # sessions into different weeks.
+        "gym_week_start": 6,
         "reminder": {"on": False, "time": "08:00"},
         "telegram_chat_id": "",
         "hevy_key": "",

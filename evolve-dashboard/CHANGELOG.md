@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.6.1
+
+- Start the gym week on Sunday by default, matching Hevy's own default. The
+  day stays configurable for anyone whose week starts elsewhere.
+- Send `gym_week_start` to the browser. The bootstrap payload is an explicit
+  allow-list, so the new setting was missing from it and the Settings control
+  always drew Monday however the streak was actually being bucketed.
+
 ## 2.6.0
 
 - Make the gym week's start day configurable, matching the same setting in

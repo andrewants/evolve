@@ -454,7 +454,7 @@ class GymSummaryTests(unittest.TestCase):
         # Nothing in the week of 6 July; an older session proves history reaches
         # past the gap, so the cap is a real miss rather than the log running out.
         workouts.append({"date": (monday - timedelta(weeks=4)).isoformat()})
-        summary = gym_summary(workouts, 1, "2026-07-31")
+        summary = gym_summary(workouts, 1, "2026-07-31", week_start=0)
         self.assertEqual(summary["streak"], 3)
         self.assertEqual(summary["streak_since"], "2026-07-13")
         self.assertEqual(summary["streak_broken_week"], "2026-07-06")
@@ -462,7 +462,7 @@ class GymSummaryTests(unittest.TestCase):
     def test_streak_running_to_the_start_of_history_reports_no_gap(self) -> None:
         monday = date.fromisoformat("2026-07-27")
         workouts = [{"date": (monday - timedelta(weeks=week)).isoformat()} for week in range(3)]
-        summary = gym_summary(workouts, 1, "2026-07-31")
+        summary = gym_summary(workouts, 1, "2026-07-31", week_start=0)
         self.assertEqual(summary["streak"], 3)
         self.assertEqual(summary["streak_since"], "2026-07-13")
         self.assertIsNone(summary["streak_broken_week"])
@@ -472,7 +472,9 @@ class GymSummaryTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         store = Store(os.path.join(directory.name, "momentum.json"))
         uid = store.add_user("Andrew", "1234")["id"]
-        self.assertEqual(store.user(uid)["settings"]["gym_week_start"], 0)
+        # Sunday by default, matching Hevy.
+        self.assertEqual(store.user(uid)["settings"]["gym_week_start"], 6)
+        self.assertEqual(store.update_user_settings(uid, {"gym_week_start": 0})["gym_week_start"], 0)
         self.assertEqual(store.update_user_settings(uid, {"gym_week_start": 6})["gym_week_start"], 6)
         self.assertEqual(store.update_user_settings(uid, {"gym_week_start": 99})["gym_week_start"], 6)
         self.assertEqual(store.update_user_settings(uid, {"gym_week_start": "x"})["gym_week_start"], 6)
@@ -1093,6 +1095,16 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(status, 403)
 
     # -- webhook --------------------------------------------------------
+
+    def test_bootstrap_exposes_the_gym_week_start(self) -> None:
+        # The payload is an explicit allow-list, so a setting the UI renders has
+        # to be added to it or the control silently falls back to its default.
+        self.sign_in()
+        _, boot = self.call("/api/bootstrap")
+        self.assertEqual(boot["settings"]["gym_week_start"], 6)
+        self.call("/api/settings", "PUT", {"gym_week_start": 0})
+        _, boot = self.call("/api/bootstrap")
+        self.assertEqual(boot["settings"]["gym_week_start"], 0)
 
     def test_health_webhook_requires_the_key(self) -> None:
         self.sign_in()

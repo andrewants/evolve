@@ -13,7 +13,7 @@ def gym_summary(
     today: str,
     *,
     display_weeks: int = 8,
-    week_start: int = 0,
+    week_start: int = 6,
 ) -> dict[str, Any]:
     """Return week-aligned counts, training streak and goal streak.
 
