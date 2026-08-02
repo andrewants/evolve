@@ -389,6 +389,13 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
 .week-bars i { width: 9px; border-radius: 2px; background: var(--color-neutral-700); }
 .week-bars i.active { background: var(--color-accent-700); }
 .week-bars i.goal { background: var(--color-accent); }
+/* The rate behind the bars, in the same voice as the streak above them: the
+   number carries the weight, the words explain it. */
+.gym-average { font-size: 11px; color: var(--color-neutral-500); }
+.gym-average b {
+  font-family: var(--font-heading); font-weight: 500; font-size: 13px;
+  color: var(--color-neutral-200);
+}
 
 .affirm-card { padding: 16px; margin-bottom: 14px; }
 .affirm-card .quote {

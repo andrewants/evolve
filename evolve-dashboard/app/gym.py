@@ -68,6 +68,22 @@ def gym_summary(
     streak, streak_oldest = current_run(1)
     goal_streak, _ = current_run(goal)
 
+    # Sessions a week, averaged over the completed weeks the chart shows. The
+    # current week is left out: it fills up as the week goes on, and counting
+    # it would drop the average every Monday and raise it every Sunday for no
+    # change in habit. Weeks before the first logged session are left out too,
+    # so someone a fortnight into their history is averaged over that
+    # fortnight rather than against six weeks of zeroes they never lived.
+    oldest_logged = max(by_offset) if by_offset else -1
+    averaged = [
+        offset for offset in range(1, visible_weeks) if offset <= oldest_logged
+    ]
+    weekly_average = (
+        round(sum(by_offset[offset] for offset in averaged) / len(averaged), 1)
+        if averaged
+        else None
+    )
+
     return {
         "counts": counts,
         "streak": streak,
@@ -88,5 +104,7 @@ def gym_summary(
         "goal_streak": goal_streak,
         "goal": goal,
         "current_count": by_offset[0],
+        # None until a completed week exists to average over.
+        "weekly_average": weekly_average,
         "week_start": first_day,
     }

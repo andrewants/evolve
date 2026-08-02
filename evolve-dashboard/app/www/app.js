@@ -198,6 +198,9 @@ function fmtUpdated(sample, today) {
   return `Updated ${fmtShort(sample.date)}`;
 }
 
+/** "3" rather than "3.0", but "2.4" kept as it is. */
+const fmtAverage = (value) => (Number.isInteger(value) ? String(value) : value.toFixed(1));
+
 function delta(current, previous, unit) {
   if (current === null || previous === null || current === undefined || previous === undefined) return "—";
   const diff = current - previous;
@@ -413,6 +416,7 @@ function gymStats() {
     goal_streak: 0,
     goal: d.settings.weekly_gym_goal,
     current_count: 0,
+    weekly_average: null,
   };
 }
 
@@ -1252,6 +1256,12 @@ function screenHome() {
             })
           )
         ),
+        gym.weekly_average === null || gym.weekly_average === undefined
+          ? null
+          : el("div", { class: "gym-average" }, [
+              el("b", { text: fmtAverage(gym.weekly_average) }),
+              el("span", { text: " a week on average" }),
+            ]),
         el("div", {
           class: "muted-sm",
           text: lastWorkout

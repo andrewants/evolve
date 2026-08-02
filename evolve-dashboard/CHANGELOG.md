@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.10.0
+
+- Give the Gym streak card sessions a week on average, under the bars. A
+  streak says you have not missed a week; it says nothing about whether those
+  weeks held one session or four, which is the number that tells you whether
+  the habit is growing.
+- Average it over the completed weeks the bars show. The current week is left
+  out, since it fills up as the week goes on and would otherwise drop the
+  average every Monday and raise it every Sunday without anything changing.
+  Weeks before the first logged session are left out too, so a fortnight of
+  history is averaged over that fortnight rather than against six weeks of
+  zeroes nobody was there for.
+
 ## 2.9.3
 
 - Line the Add buttons up with the fields beside them. The phrase row bottom-

@@ -455,6 +455,61 @@ class GymSummaryTests(unittest.TestCase):
         self.assertEqual(summary["streak"], 10)
         self.assertEqual(summary["goal_streak"], 0)
 
+    def test_weekly_average_covers_the_completed_weeks_on_the_chart(self) -> None:
+        monday = date.fromisoformat("2026-07-27")
+        workouts = []
+        # Ten weeks back, three a week — deeper than the chart's eight, so the
+        # average has to stop at the seven completed weeks it shows.
+        for week in range(1, 11):
+            start = monday - timedelta(weeks=week)
+            workouts.extend(
+                {"date": (start + timedelta(days=day)).isoformat()} for day in (0, 2, 4)
+            )
+        summary = gym_summary(workouts, 3, "2026-07-31", week_start=0)
+        self.assertEqual(summary["weekly_average"], 3)
+
+    def test_weekly_average_ignores_the_half_finished_current_week(self) -> None:
+        monday = date.fromisoformat("2026-07-27")
+        workouts = [{"date": monday.isoformat()}]  # one session so far this week
+        for week in range(1, 4):
+            start = monday - timedelta(weeks=week)
+            workouts.extend(
+                {"date": (start + timedelta(days=day)).isoformat()} for day in (0, 2, 4)
+            )
+        summary = gym_summary(workouts, 3, "2026-07-31", week_start=0)
+        # Three completed weeks of three; the single session logged so far this
+        # week must not drag the rate down to 2.5.
+        self.assertEqual(summary["weekly_average"], 3)
+
+    def test_weekly_average_is_not_diluted_by_weeks_before_the_first_session(self) -> None:
+        monday = date.fromisoformat("2026-07-27")
+        workouts = []
+        for week in (1, 2):
+            start = monday - timedelta(weeks=week)
+            workouts.extend(
+                {"date": (start + timedelta(days=day)).isoformat()} for day in (0, 2, 4)
+            )
+        summary = gym_summary(workouts, 3, "2026-07-31", week_start=0)
+        # Two weeks into the history, so two weeks is what it averages over —
+        # not six empty weeks the member was never around for.
+        self.assertEqual(summary["weekly_average"], 3)
+
+    def test_weekly_average_counts_missed_weeks_inside_the_history(self) -> None:
+        monday = date.fromisoformat("2026-07-27")
+        # Sessions three and one weeks back, nothing in the week between.
+        workouts = [
+            {"date": (monday - timedelta(weeks=3)).isoformat()},
+            {"date": (monday - timedelta(weeks=3, days=-2)).isoformat()},
+            {"date": (monday - timedelta(weeks=1)).isoformat()},
+        ]
+        summary = gym_summary(workouts, 3, "2026-07-31", week_start=0)
+        self.assertEqual(summary["weekly_average"], 1)
+
+    def test_weekly_average_is_absent_until_a_week_has_finished(self) -> None:
+        self.assertIsNone(gym_summary([], 3, "2026-07-31")["weekly_average"])
+        this_week = gym_summary([{"date": "2026-07-30"}], 3, "2026-07-31", week_start=0)
+        self.assertIsNone(this_week["weekly_average"], "nothing completed to average")
+
     def test_week_start_day_changes_which_week_a_session_counts_for(self) -> None:
         # Sunday the 26th and Monday the 27th. Evenly spaced sessions land one
         # per week under any alignment, so only sessions straddling a boundary

@@ -161,6 +161,13 @@ The complete workout history contributes to both even though the bar chart
 shows only the latest eight weeks. An unfinished current week does not break
 either streak; it joins the goal streak as soon as its target is met.
 
+The Gym streak card on Home also gives sessions a week on average, over the
+completed weeks the bars beside it show. The current week is left out — it
+fills up as the week goes on, so counting it would drop the average every
+Monday for no change in habit — and so are any weeks before your first logged
+session, so a fortnight of history is averaged over that fortnight. The
+average appears once one week has finished.
+
 The official API requires an active Hevy Pro subscription. The Hevy API key
 is per member, since each person has their own account. Once configured, the
 password field remains blank for security; leave it blank to keep the saved
