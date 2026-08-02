@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.9.3
+
+- Line the Add buttons up with the fields beside them. The phrase row bottom-
+  aligned a 36px button against a 44px box, leaving the button short of the
+  field's edges; the habit row got its match by accident, from a stretch the
+  phrase row could not use. Both rows now come from one rule that pins field
+  and button to the same height, and holds the button on the field's bottom
+  edge as a long phrase grows the box.
+
 ## 2.9.2
 
 - Move the way into Settings to the foot of Manage. As a small grey gear

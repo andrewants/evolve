@@ -1455,7 +1455,7 @@ function habitsEditor(d) {
       ])
     ),
     el("form", {
-      style: "display:flex;gap:8px;padding:10px 0",
+      class: "add-row",
       onsubmit: (event) => {
         event.preventDefault();
         const field = event.target.elements.name;
@@ -1468,7 +1468,7 @@ function habitsEditor(d) {
       },
     }, [
       el("input", { class: "input", name: "name", placeholder: "New habit", maxlength: "80", "aria-label": "New habit" }),
-      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:36px", text: "Add" }),
+      el("button", { class: "btn btn-primary", type: "submit", text: "Add" }),
     ]),
   ]);
 }
@@ -1499,7 +1499,7 @@ function mottoEditor(d) {
       ])
     ),
     el("form", {
-      style: "display:flex;gap:8px;align-items:flex-end;padding:10px 0",
+      class: "add-row",
       onsubmit: (event) => {
         event.preventDefault();
         const field = event.target.elements.text;
@@ -1515,15 +1515,15 @@ function mottoEditor(d) {
       el("textarea", {
         // One row at rest — a phrase is usually a line, and an empty box
         // should not reserve the space the longest one would need. It grows
-        // to fit as it is typed into.
-        class: "input motto-input", name: "text", rows: "1", maxlength: "500",
+        // to fit as it is typed into; the row's min-height is the floor.
+        class: "input", name: "text", rows: "1", maxlength: "500",
         placeholder: "New phrase", "aria-label": "New motivational phrase",
         oninput: (event) => {
           event.target.style.height = "auto";
           event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
         },
       }),
-      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:36px", text: "Add" }),
+      el("button", { class: "btn btn-primary", type: "submit", text: "Add" }),
     ]),
   ]);
 }

@@ -608,7 +608,13 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
 .srow .s { font-size: 11px; color: var(--color-neutral-500); overflow-wrap: anywhere; }
 /* Phrases are sentences, not labels: they wrap rather than run off the row. */
 .srow .t.motto-text { font-weight: 400; line-height: 1.45; white-space: pre-wrap; }
-.motto-input { flex: 1; min-width: 0; resize: vertical; }
+
+/* A field and its Add button, at the foot of a list. Both are pinned to the
+   same height so their edges line up, and the button is anchored to the
+   bottom so it stays there when a growing field pushes the row taller. */
+.add-row { display: flex; align-items: flex-end; gap: 8px; padding: 10px 0; }
+.add-row .input { flex: 1; min-width: 0; min-height: 44px; }
+.add-row .btn { flex: none; min-height: 44px; padding-inline: 16px; }
 .srow > .icon { font-size: 20px; color: var(--color-accent-400); flex: none; }
 .srow > .icon.off { color: var(--color-neutral-400); }
 
