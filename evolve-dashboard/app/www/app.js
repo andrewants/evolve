@@ -1176,17 +1176,10 @@ function screenHome() {
 
     el("div", { class: "row-between", style: "align-items:center;margin:0 4px 8px" }, [
       el("span", { class: "section-label", text: "Days since" }),
-      el("div", { style: "display:flex;align-items:center;gap:2px" }, [
-        el("button", {
-          class: "quiet-link", type: "button", text: "Manage",
-          onclick: () => { pushLayer(); state.sub = "manage"; render(); },
-        }),
-        el("button", {
-          class: "quiet-link quiet-link--icon", type: "button",
-          "aria-label": "Settings", title: "Settings",
-          onclick: () => { pushLayer(); state.sub = "settings"; render(); },
-        }, [icon("gear-six", { size: "16px" })]),
-      ]),
+      el("button", {
+        class: "quiet-link", type: "button", text: "Manage",
+        onclick: () => { pushLayer(); state.sub = "manage"; render(); },
+      }),
     ]),
   ];
 
@@ -1397,6 +1390,21 @@ function screenManage() {
 
     manageSection("Motivation"),
     mottoEditor(d),
+
+    // Settings is a rarer errand than these three, so it sits at the end
+    // rather than in the tab bar — but it is the only way in, so it is a row
+    // you cannot miss rather than an icon tucked beside a heading.
+    el("button", {
+      class: "card settings-link", type: "button",
+      onclick: () => { state.sub = "settings"; render(); },
+    }, [
+      el("span", { class: "settings-link-icon" }, [icon("gear-six", { fill: true, size: "22px" })]),
+      el("span", { class: "grow" }, [
+        el("span", { class: "t", text: "Settings" }),
+        el("span", { class: "s", text: "Goals, integrations, household and PIN" }),
+      ]),
+      icon("caret-right", { size: "16px", cls: "icon settings-link-caret" }),
+    ]),
   ]);
 }
 

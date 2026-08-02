@@ -57,12 +57,10 @@ Add-on options (Configuration tab):
 | `session_days`      | `14`    | How long a PIN sign-in lasts                     |
 | `day_rollover_hour` | `4`     | Hour a new day starts, so 01:30 counts as "last night" |
 
-Everything else is configured inside the app, because it is per-member. Two
-places hold it, both reached from Home beside the Days since heading:
-
-- **Manage** — what the dashboard shows: counters, habits and the motivation
-  bank.
-- The **gear** next to it — Settings: goals, integrations, household and PIN.
+Everything else is configured inside the app, because it is per-member.
+**Manage**, beside the Days since heading on Home, holds what the dashboard
+shows: counters, habits and the motivation bank. **Settings** — goals,
+integrations, household and PIN — is the last row on that same screen.
 
 ### Motivation
 

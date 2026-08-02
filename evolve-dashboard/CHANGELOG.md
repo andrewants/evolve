@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.9.2
+
+- Move the way into Settings to the foot of Manage. As a small grey gear
+  beside a heading it was easy to miss, and it is the only way in now that it
+  has left the tab bar; it is a full row with a lit icon, a line saying what
+  is behind it, and a chevron. Back from Settings returns to Home, as it does
+  from Manage.
+
 ## 2.9.1
 
 - Settle the dashboard header. The motivation line was set in italics at

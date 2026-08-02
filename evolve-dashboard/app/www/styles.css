@@ -272,7 +272,6 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
   font-size: 12px; color: var(--color-neutral-600); padding: 6px;
 }
 .quiet-link:active { color: var(--color-neutral-400); }
-.quiet-link--icon { display: flex; align-items: center; padding: 6px 4px; }
 
 /* ───────────────────────────────────────────────────────────────── login */
 
@@ -612,6 +611,23 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
 .motto-input { flex: 1; min-width: 0; resize: vertical; }
 .srow > .icon { font-size: 20px; color: var(--color-accent-400); flex: none; }
 .srow > .icon.off { color: var(--color-neutral-400); }
+
+/* The way into Settings, and the only one — so it is a row with a lit icon
+   at the foot of Manage rather than something to go looking for. */
+.settings-link {
+  flex-direction: row; align-items: center; gap: 14px;
+  width: 100%; padding: 13px 14px; margin: 24px 0 6px; text-align: left;
+}
+.settings-link:active { background: var(--color-neutral-900); }
+.settings-link-icon {
+  display: flex; align-items: center; justify-content: center; flex: none;
+  width: 38px; height: 38px; border-radius: 11px;
+  background: var(--color-accent-700); color: var(--color-accent-100);
+}
+.settings-link .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-link .t { font-size: 15px; font-weight: 500; color: var(--color-text); }
+.settings-link .s { font-size: 12px; color: var(--color-neutral-500); }
+.settings-link-caret { color: var(--color-neutral-600); flex: none; }
 
 .counter-row { padding: 14px 16px; display: flex; flex-direction: row; align-items: center; gap: 6px; }
 .counter-row > .icon { font-size: 20px; color: var(--color-accent-400); flex: none; margin-right: 8px; }
