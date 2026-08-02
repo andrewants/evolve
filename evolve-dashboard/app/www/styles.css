@@ -330,6 +330,16 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
   color: var(--color-accent-200); font-size: 15px; font-weight: 500; flex: none;
 }
 
+/* The line from the motivation bank, tucked under the greeting. It is a
+   button because tapping it moves on to the next line, but it should read as
+   the sentence it is, not as a control. */
+.dash-motto {
+  display: block; width: 100%; margin: -10px 4px 18px; padding: 0 4px 0 0;
+  text-align: left; font-size: 14px; font-style: italic; line-height: 1.5;
+  color: var(--color-neutral-300); text-wrap: pretty;
+}
+.dash-motto:active { color: var(--color-neutral-400); }
+
 .counter-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 14px; }
 .counter-card { padding: 14px 12px; text-align: center; align-items: center; }
 .counter-card .icon { font-size: 18px; color: var(--color-accent-400); }
@@ -581,6 +591,9 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
 .srow .grow { flex: 1; min-width: 0; }
 .srow .t { font-size: 13px; font-weight: 500; color: var(--color-text); }
 .srow .s { font-size: 11px; color: var(--color-neutral-500); overflow-wrap: anywhere; }
+/* Phrases are sentences, not labels: they wrap rather than run off the row. */
+.srow .t.motto-text { font-weight: 400; line-height: 1.45; white-space: pre-wrap; }
+.motto-input { flex: 1; min-width: 0; resize: vertical; }
 .srow > .icon { font-size: 20px; color: var(--color-accent-400); flex: none; }
 .srow > .icon.off { color: var(--color-neutral-400); }
 

@@ -106,6 +106,7 @@ def new_user(name: str, pin: str | None = None) -> dict[str, Any]:
         "pin_salt": salt,
         "counters": [],
         "affirmations": [],
+        "mottos": [],
         "habits": [],
         "checkins": {},
         "journal": [],
@@ -165,6 +166,7 @@ class Store:
         for user in state["users"]:
             user.setdefault("counters", [])
             user.setdefault("affirmations", [])
+            user.setdefault("mottos", [])
             user.setdefault("habits", [])
             user.setdefault("checkins", {})
             user.setdefault("journal", [])
@@ -394,6 +396,31 @@ class Store:
 
     def delete_affirmation(self, user_id: str, affirmation_id: str) -> bool:
         return self._delete_from(user_id, "affirmations", affirmation_id)
+
+    # -- mottos ---------------------------------------------------------
+
+    def save_motto(self, user_id: str, text: str, motto_id: str | None) -> dict[str, Any] | None:
+        """Add or edit one line of the motivation bank the dashboard rotates."""
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return None
+            text = (text or "").strip()[:500]
+            if not text:
+                raise ValueError("motto needs text")
+            if motto_id:
+                item = _find(user["mottos"], motto_id)
+                if item is None:
+                    return None
+                item["text"] = text
+            else:
+                item = {"id": new_id(), "text": text, "created": now_iso()}
+                user["mottos"].append(item)
+            self._commit()
+            return dict(item)
+
+    def delete_motto(self, user_id: str, motto_id: str) -> bool:
+        return self._delete_from(user_id, "mottos", motto_id)
 
     # -- habits ---------------------------------------------------------
 

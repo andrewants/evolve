@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.8.0
+
+- Greet the day with a phrase. Settings → **Motivation** keeps a bank of
+  motivational lines and Home shows one of them under the good morning. The
+  bank turns over a phrase a day, in the order they were written, so the same
+  one greets every visit until tomorrow instead of reshuffling mid-read;
+  tapping it moves on to the next without waiting. Nothing is shipped in the
+  bank — it stays empty, and Home shows nothing there, until you write one.
+- Show the affirmation being edited. Its dialog set the textarea's `value`
+  attribute, which a textarea takes no starting content from, so editing one
+  opened an empty box with no sign of what was about to be replaced.
+
 ## 2.7.0
 
 - Put the body composition chart under the finger. Dragging it sideways moves

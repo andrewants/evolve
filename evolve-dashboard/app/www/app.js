@@ -42,6 +42,7 @@ const state = {
   chartSpanDays: 30,
   chartOffsetDays: 0,
   chartPin: null, // iso date of the reading being read off the chart
+  mottoStep: 0, // how many times today's motivation line has been stepped past
   modal: null,
   editId: null,
   form: {},
@@ -283,6 +284,20 @@ const data = () => state.data;
 function metricSeries(key) {
   const samples = data().weight_samples || [];
   return samples.filter((s) => s[key] !== null && s[key] !== undefined);
+}
+
+/** Today's line from the motivation bank.
+ *
+ * The bank turns over a line a day, in the order the lines were written, so
+ * one phrase greets every visit until tomorrow rather than reshuffling under
+ * the reader. `mottoStep` is what a tap adds: it moves on to the next line
+ * without waiting for the day to.
+ */
+function dailyMotto() {
+  const bank = data().mottos || [];
+  if (!bank.length) return null;
+  const day = Math.floor(fromIso(data().today).getTime() / DAY_MS);
+  return bank[(((day + state.mottoStep) % bank.length) + bank.length) % bank.length];
 }
 
 function counterIconCatalog() {
@@ -1124,6 +1139,7 @@ function screenHome() {
   const pinned = d.affirmations.find((a) => a.pinned) || d.affirmations[0];
   const lastWorkout = d.workouts[0];
   const habitsDone = d.habits.filter((h) => h.done).length;
+  const motto = dailyMotto();
 
   const children = [
     el("div", { class: "dash-head" }, [
@@ -1143,6 +1159,21 @@ function screenHome() {
         }),
       }),
     ]),
+
+    motto
+      ? el("button", {
+          class: "dash-motto",
+          type: "button",
+          text: motto.text,
+          "aria-label": `Motivation: ${motto.text}. Activate for another.`,
+          title: d.mottos.length > 1 ? "Show another" : null,
+          onclick: () => {
+            if (d.mottos.length < 2) return;
+            state.mottoStep += 1;
+            render();
+          },
+        })
+      : null,
 
     el("div", { class: "row-between", style: "align-items:baseline;margin:0 4px 8px" }, [
       el("span", { class: "section-label", text: "Days since" }),
@@ -2076,6 +2107,54 @@ function screenSettings() {
       ]),
     ]),
 
+    // ── motivation
+    section("Motivation"),
+    el("div", { class: "card rows-card" }, [
+      el("div", { class: "muted-sm", style: "padding:4px 0 8px", text: "One of these greets you under the good morning, a different one each day." }),
+      ...d.mottos.map((motto) =>
+        el("div", { class: "srow" }, [
+          el("div", { class: "grow" }, [el("div", { class: "t motto-text", text: motto.text })]),
+          el("button", {
+            class: "icon-btn", type: "button", "aria-label": `Edit ${motto.text.slice(0, 24)}`,
+            onclick: () => {
+              pushLayer();
+              state.modal = "motto";
+              state.editId = motto.id;
+              state.form = { text: motto.text };
+              render();
+            },
+          }, [icon("pencil-simple", { size: "16px" })]),
+          el("button", {
+            class: "icon-btn", type: "button", "aria-label": `Delete ${motto.text.slice(0, 24)}`,
+            onclick: () => guard(async () => {
+              await api(`/api/mottos/${motto.id}`, { method: "DELETE" });
+              await refresh();
+            }),
+          }, [icon("trash-simple", { size: "16px" })]),
+        ])
+      ),
+      el("form", {
+        style: "display:flex;gap:8px;align-items:flex-end;padding:10px 0",
+        onsubmit: (event) => {
+          event.preventDefault();
+          const field = event.target.elements.text;
+          if (!field.value.trim()) return;
+          guard(async () => {
+            await api("/api/mottos", { method: "POST", body: { text: field.value } });
+            field.value = "";
+            await refresh();
+          }, "Phrase added");
+        },
+      }, [
+        el("textarea", {
+          class: "input motto-input", name: "text", rows: "2", maxlength: "500",
+          placeholder: "You'll never know the value of a moment…",
+          "aria-label": "New motivational phrase",
+        }),
+        el("button", { class: "btn btn-primary", type: "submit", style: "min-height:36px", text: "Add" }),
+      ]),
+    ]),
+
     // ── household
     section("Household"),
     el("div", { class: "card rows-card" }, [
@@ -2251,8 +2330,39 @@ function renderModal() {
       }, [
         el("div", { class: "dialog-title", text: state.editId ? "Edit affirmation" : "New affirmation" }),
         el("textarea", {
+          // `text`, not `value`: a textarea takes its starting content from
+          // its child node, so editing an existing one opened an empty box.
           class: "input", rows: "4", placeholder: "I am...", maxlength: "500", required: true,
-          "aria-label": "Affirmation",
+          "aria-label": "Affirmation", text: form.text,
+          oninput: (event) => { form.text = event.target.value; },
+        }),
+        el("div", { class: "dialog-actions" }, [
+          el("button", { class: "btn btn-ghost", type: "button", text: "Cancel", onclick: close }),
+          el("button", { class: "btn btn-primary", type: "submit", text: "Save" }),
+        ]),
+      ])
+    );
+  }
+
+  if (state.modal === "motto") {
+    const form = state.form;
+    return backdrop(
+      el("form", {
+        class: "dialog",
+        onsubmit: (event) => {
+          event.preventDefault();
+          if (!form.text.trim()) return;
+          guard(async () => {
+            await api(`/api/mottos/${state.editId}`, { method: "PUT", body: { text: form.text } });
+            close();
+            await refresh();
+          }, "Phrase saved");
+        },
+      }, [
+        el("div", { class: "dialog-title", text: "Edit phrase" }),
+        el("textarea", {
+          class: "input", rows: "4", maxlength: "500", required: true,
+          "aria-label": "Motivational phrase", text: form.text,
           oninput: (event) => { form.text = event.target.value; },
         }),
         el("div", { class: "dialog-actions" }, [

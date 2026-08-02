@@ -46,7 +46,7 @@ MAX_IMPORT_BYTES = 128 * 1024 * 1024
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.8.0"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
@@ -201,6 +201,9 @@ class Api:
             Route("PUT", r"/api/affirmations/([\w-]+)", self.update_affirmation),
             Route("DELETE", r"/api/affirmations/([\w-]+)", self.delete_affirmation),
             Route("POST", r"/api/affirmations/([\w-]+)/pin", self.pin_affirmation),
+            Route("POST", r"/api/mottos", self.create_motto),
+            Route("PUT", r"/api/mottos/([\w-]+)", self.update_motto),
+            Route("DELETE", r"/api/mottos/([\w-]+)", self.delete_motto),
 
             Route("POST", r"/api/habits", self.create_habit),
             Route("PUT", r"/api/habits/([\w-]+)", self.update_habit),
@@ -340,6 +343,7 @@ class Api:
                 for counter in user["counters"]
             ],
             "affirmations": user["affirmations"],
+            "mottos": user["mottos"],
             "habits": [
                 {**habit, "done": today in user["checkins"].get(habit["id"], [])}
                 for habit in user["habits"]
@@ -422,6 +426,17 @@ class Api:
 
     def pin_affirmation(self, _body: dict, ctx, item_id: str) -> tuple[int, Any]:
         return _deleted(self.store.pin_affirmation(ctx.user_id, item_id))
+
+    # -- mottos ---------------------------------------------------------
+
+    def create_motto(self, body: dict, ctx) -> tuple[int, Any]:
+        return _created(self.store.save_motto(ctx.user_id, body.get("text", ""), None), "motto")
+
+    def update_motto(self, body: dict, ctx, item_id: str) -> tuple[int, Any]:
+        return _found(self.store.save_motto(ctx.user_id, body.get("text", ""), item_id), "motto")
+
+    def delete_motto(self, _body: dict, ctx, item_id: str) -> tuple[int, Any]:
+        return _deleted(self.store.delete_motto(ctx.user_id, item_id))
 
     # -- habits ---------------------------------------------------------
 

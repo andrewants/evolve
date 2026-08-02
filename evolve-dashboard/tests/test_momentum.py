@@ -129,6 +129,27 @@ class StoreTests(unittest.TestCase):
         pinned = [a for a in self.store.user(self.uid)["affirmations"] if a["pinned"]]
         self.assertEqual([a["id"] for a in pinned], [second["id"]])
 
+    def test_mottos_keep_the_order_they_were_written_in(self) -> None:
+        # The dashboard rotates the bank by index, so the order is the feature.
+        for text in ("First", "Second", "Third"):
+            self.store.save_motto(self.uid, text, None)
+        self.assertEqual([m["text"] for m in self.store.user(self.uid)["mottos"]], ["First", "Second", "Third"])
+
+    def test_motto_edit_keeps_its_place(self) -> None:
+        first = self.store.save_motto(self.uid, "First", None)
+        self.store.save_motto(self.uid, "Second", None)
+        edited = self.store.save_motto(self.uid, "  First, rewritten  ", first["id"])
+        self.assertEqual(edited["text"], "First, rewritten", "surrounding space is trimmed")
+        self.assertEqual([m["text"] for m in self.store.user(self.uid)["mottos"]], ["First, rewritten", "Second"])
+
+    def test_blank_motto_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            self.store.save_motto(self.uid, "   ", None)
+        self.assertEqual(self.store.user(self.uid)["mottos"], [])
+
+    def test_new_member_starts_with_an_empty_motto_bank(self) -> None:
+        self.assertEqual(self.store.user(self.uid)["mottos"], [])
+
     def test_habit_toggle_is_idempotent_per_day(self) -> None:
         habit = self.store.save_habit(self.uid, "Morning yoga", None)
         today = date.today().isoformat()
@@ -1080,6 +1101,29 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(toggled["checkin"]["done"])
         _, boot = self.call("/api/bootstrap")
         self.assertTrue(next(h for h in boot["habits"] if h["id"] == habit_id)["done"])
+
+    def test_motto_round_trip(self) -> None:
+        self.sign_in()
+        status, created = self.call(
+            "/api/mottos", "POST",
+            {"text": "You'll never know the value of a moment, until it becomes a memory"},
+        )
+        self.assertEqual(status, 201)
+        motto_id = created["motto"]["id"]
+
+        _, boot = self.call("/api/bootstrap")
+        self.assertIn(motto_id, [m["id"] for m in boot["mottos"]])
+
+        status, edited = self.call(f"/api/mottos/{motto_id}", "PUT", {"text": "The obstacle is the way"})
+        self.assertEqual((status, edited["motto"]["text"]), (200, "The obstacle is the way"))
+
+        self.assertEqual(self.call(f"/api/mottos/{motto_id}", "DELETE")[0], 200)
+        self.assertEqual(self.call(f"/api/mottos/{motto_id}", "DELETE")[0], 404)
+
+    def test_blank_motto_is_rejected_by_the_api(self) -> None:
+        self.sign_in()
+        status, _ = self.call("/api/mottos", "POST", {"text": "  "})
+        self.assertEqual(status, 400)
 
     def test_last_member_cannot_be_removed(self) -> None:
         self.sign_in()

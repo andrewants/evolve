@@ -60,6 +60,17 @@ Add-on options (Configuration tab):
 Everything else is configured in the app's **Settings** tab, because it is
 per-member.
 
+### Motivation
+
+Settings → **Motivation**. Write the phrases you want to be greeted with, one
+per entry; Momentum ships none of its own, so the bank is empty until you fill
+it. One of them then sits under the good morning on Home.
+
+The bank turns over a phrase a day, in the order they were written, so the
+same one greets every visit until tomorrow rather than reshuffling while you
+read it. Tapping the phrase moves to the next one without waiting for the day
+to. With the bank empty, Home simply shows nothing there.
+
 ### Days-since counter icons
 
 Open **Manage** beside Days since, then add or edit a counter. Momentum ships
@@ -233,6 +244,9 @@ All routes need the session cookie except `/api/session`, `/api/setup` and
 | `POST`   | `/api/counters/{id}/reset`       | Reset to today, keeping best  |
 | `POST`   | `/api/counters/{id}/dash`        | Toggle dashboard slot (max 3) |
 | `POST`   | `/api/affirmations/{id}/pin`     | Pin to the dashboard          |
+| `POST`   | `/api/mottos`                    | Add a motivational phrase     |
+| `PUT`    | `/api/mottos/{id}`               | Rewrite one                   |
+| `DELETE` | `/api/mottos/{id}`               | Remove one                    |
 | `POST`   | `/api/habits/{id}/toggle`        | Tick a habit for a day        |
 | `POST`   | `/api/journal`                   | Add an entry                  |
 | `PUT`    | `/api/settings`                  | Goals, reminder, entities     |
