@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.9.1
+
+- Settle the dashboard header. The motivation line was set in italics at
+  nearly the greeting's own colour, which put a slanted, near-white paragraph
+  directly under a bold heading and left the eye with two things of equal
+  weight to read. The header is now three plain levels — day, greeting,
+  phrase — each a step smaller and a step further back in colour, with the
+  greeting the only thing at full strength. Nothing is italicised.
+- Keep the header a fixed size. Phrases wrap on balanced lines rather than
+  stranding a word or two on the last one, and past four lines they are
+  clipped, so a long one cannot push the day's cards off the screen.
+
 ## 2.9.0
 
 - Gather what the dashboard shows behind one **Manage** screen. Counters were

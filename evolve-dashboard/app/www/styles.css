@@ -326,11 +326,16 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
 
 /* ────────────────────────────────────────────────────────────── dashboard */
 
-.dash-head { display: flex; justify-content: space-between; align-items: center; margin: 8px 4px 16px; }
-.dash-head .date { font-size: 12px; color: var(--color-neutral-400); }
+/* The header is one block of type on three levels — the day, the greeting,
+   and the line of motivation under it — so it reads top to bottom in one
+   pass. Each level steps down in size and back in colour; nothing competes
+   with the greeting, and nothing is set in italics, which at this size reads
+   as a slant across the screen rather than as emphasis. */
+.dash-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin: 10px 4px 0; }
+.dash-head .date { font-size: 13px; color: var(--color-neutral-500); }
 .dash-head .greet {
-  font-family: var(--font-heading); font-size: 22px; font-weight: 500;
-  color: var(--color-text); line-height: 1.25;
+  font-family: var(--font-heading); font-size: 26px; font-weight: 600;
+  color: var(--color-text); line-height: 1.2; letter-spacing: -0.02em; margin-top: 1px;
 }
 .avatar-btn {
   width: 44px; height: 44px; border-radius: 50%;
@@ -338,13 +343,16 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
   color: var(--color-accent-200); font-size: 15px; font-weight: 500; flex: none;
 }
 
-/* The line from the motivation bank, tucked under the greeting. It is a
-   button because tapping it moves on to the next line, but it should read as
-   the sentence it is, not as a control. */
+/* Supporting text, a step behind the greeting. Balanced wrapping keeps a
+   two-line phrase from leaving three words stranded, and the clamp keeps a
+   long one from pushing the dashboard off the screen — four lines is past
+   any phrase short enough to read at a glance. A tap moves to the next
+   phrase, but it should read as the sentence it is, not as a control. */
 .dash-motto {
-  display: block; width: 100%; margin: -10px 4px 18px; padding: 0 4px 0 0;
-  text-align: left; font-size: 14px; font-style: italic; line-height: 1.5;
-  color: var(--color-neutral-300); text-wrap: pretty;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
+  width: 100%; margin: 10px 4px 24px; padding: 0 4px 0 0;
+  text-align: left; font-size: 15px; line-height: 1.45;
+  color: var(--color-neutral-500); text-wrap: balance;
 }
 .dash-motto:active { color: var(--color-neutral-400); }
 
