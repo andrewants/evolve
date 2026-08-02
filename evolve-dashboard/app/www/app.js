@@ -39,8 +39,9 @@ const state = {
   tab: "home",
   sub: null, // counters | journal
   metric: "weight",
-  chartSpanDays: 365,
+  chartSpanDays: 30,
   chartOffsetDays: 0,
+  chartPin: null, // iso date of the reading being read off the chart
   modal: null,
   editId: null,
   form: {},
@@ -149,8 +150,6 @@ const fromIso = (iso) => {
 /** "Jul 30" — matches the mockup's date formatting. */
 const fmtShort = (iso) =>
   fromIso(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-const fmtChartDate = (iso) =>
-  fromIso(iso).toLocaleDateString(undefined, { month: "short", year: "numeric" });
 const fmtLong = (iso) =>
   fromIso(iso).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 const fmtSession = (iso) =>
@@ -424,102 +423,518 @@ function sparkline(values) {
   );
 }
 
-function chartWindow(series) {
-  if (!series.length) return { visible: [], maxOffset: 0 };
-  const ordered = series.slice().sort((a, b) => fromIso(a.date) - fromIso(b.date));
-  const firstTime = fromIso(ordered[0].date).getTime();
-  const lastTime = fromIso(ordered[ordered.length - 1].date).getTime();
-  const totalDays = Math.max(0, Math.round((lastTime - firstTime) / DAY_MS));
-  const span = state.chartSpanDays;
-  const maxOffset = span ? Math.max(0, totalDays - span) : 0;
-  state.chartOffsetDays = Math.max(0, Math.min(maxOffset, state.chartOffsetDays));
-  if (!span) return { visible: ordered, maxOffset, totalDays };
+/* The body composition chart.
+ *
+ * The history is daily and years long, so the chart shows a short window of it
+ * and the finger moves that window: drag to pan, pinch to change the span,
+ * touch the plot to read a reading off the line. Pan and read share one
+ * surface — a drag that travels pans, a press that stays put reads — which is
+ * the split every phone chart uses, and it leaves the plot itself as the only
+ * control to learn.
+ */
 
-  const endTime = lastTime - state.chartOffsetDays * DAY_MS;
-  const startTime = endTime - span * DAY_MS;
-  const visible = ordered.filter((sample) => {
-    const time = fromIso(sample.date).getTime();
-    return time >= startTime && time <= endTime;
-  });
-  return { visible, maxOffset, totalDays };
+const CHART_RANGES = [[7, "1W"], [30, "1M"], [90, "3M"], [365, "1Y"], [0, "All"]];
+const CHART_MIN_SPAN = 3; // days — as far as a pinch may zoom in
+const CHART_HEIGHT = 232;
+const CHART_INSET = { left: 38, right: 14, top: 16, bottom: 26 };
+const SCRUB_HOLD_MS = 240; // a press held this long reads instead of panning
+const PAN_SLOP = 9; // px of travel that commits a gesture to a pan
+
+const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+
+let chartUid = 0;
+let chartHintSeen = false;
+
+/** Axis bounds on round numbers, so the labels read 17.5 · 18 · 18.5 instead
+ *  of wherever the extremes happen to fall. */
+function niceScale(min, max, count = 4) {
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return niceScale(0, 1, count);
+  if (max - min < 1e-9) {
+    const pad = Math.max(Math.abs(max) * 0.01, 0.5);
+    min -= pad;
+    max += pad;
+  }
+  const rough = (max - min) / count;
+  const magnitude = 10 ** Math.floor(Math.log10(rough));
+  const norm = rough / magnitude;
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * magnitude;
+  const low = Math.floor(min / step) * step;
+  const high = Math.ceil(max / step) * step;
+  const decimals = step >= 1
+    ? (Number.isInteger(step) ? 0 : 1)
+    : Math.min(2, Math.ceil(-Math.log10(step)));
+  const ticks = [];
+  for (let value = low; value <= high + step / 2; value += step) ticks.push(Number(value.toFixed(6)));
+  return { low, high, ticks, decimals };
+}
+
+/** Axis dates carry only what the span cannot imply: days in a short window,
+ *  bare months in a year, the year itself once the window is longer. */
+function fmtAxisTick(time, spanDays) {
+  const stamp = new Date(time);
+  if (spanDays <= 120) return stamp.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  if (spanDays <= 400) return stamp.toLocaleDateString(undefined, { month: "short" });
+  return stamp.toLocaleDateString(undefined, { month: "short", year: "2-digit" });
+}
+
+/** "3 – 12 Mar" for the window the chart is currently showing. */
+function fmtWindowRange(startTime, endTime) {
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  const wide = endTime - startTime > 300 * DAY_MS;
+  const needsYear = wide
+    || start.getFullYear() !== end.getFullYear()
+    || end.getFullYear() !== new Date().getFullYear();
+  const opts = wide
+    ? { month: "short", year: "numeric" }
+    : needsYear
+      ? { day: "numeric", month: "short", year: "numeric" }
+      : { day: "numeric", month: "short" };
+  const from = start.toLocaleDateString(undefined, opts);
+  const to = end.toLocaleDateString(undefined, opts);
+  return from === to ? from : `${from} – ${to}`;
 }
 
 function metricChart(series, metric) {
-  if (series.length < 2) {
+  if (!series.length) {
     return el("div", { class: "empty", text: "Not enough readings yet for a chart." });
   }
-  const values = series.map((sample) => Number(sample[metric.key]));
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const rawRange = max - min;
-  const padding = rawRange ? rawRange * 0.08 : Math.max(Math.abs(max) * 0.02, 1);
-  const low = min - padding;
-  const high = max + padding;
-  const range = high - low;
-  const left = 42;
-  const right = 372;
-  const top = 18;
-  const bottom = 228;
-  const firstTime = fromIso(series[0].date).getTime();
-  const lastTime = fromIso(series[series.length - 1].date).getTime();
-  const timeRange = lastTime - firstTime || DAY_MS;
-  const px = (sample) => left + ((fromIso(sample.date).getTime() - firstTime) / timeRange) * (right - left);
-  const py = (value) => bottom - ((value - low) / range) * (bottom - top);
-  const points = series
-    .map((sample) => `${px(sample).toFixed(1)},${py(Number(sample[metric.key])).toFixed(1)}`)
-    .join(" ");
-  const area = `M${series
-    .map((sample) => `${px(sample).toFixed(1)} ${py(Number(sample[metric.key])).toFixed(1)}`)
-    .join(" L")} L${right} ${bottom} L${left} ${bottom} Z`;
-  const children = [];
 
-  for (let i = 0; i <= 4; i += 1) {
-    const value = high - (i / 4) * range;
-    const y = top + (i / 4) * (bottom - top);
-    children.push(
-      svgEl("line", { x1: left, y1: y, x2: right, y2: y, class: "chart-grid" }),
-      svgEl("text", { x: left - 9, y: y + 4, class: "chart-label", "text-anchor": "end" }, [
-        document.createTextNode(value.toFixed(metric.key === "visceral" ? 0 : 1)),
+  const samples = series.slice().sort((a, b) => fromIso(a.date) - fromIso(b.date));
+  const times = samples.map((sample) => fromIso(sample.date).getTime());
+  const valueOf = (sample) => Number(sample[metric.key]);
+  const fmtValue = (value) => value.toFixed(metric.key === "visceral" ? 0 : 1);
+
+  const firstTime = times[0];
+  const lastTime = times[times.length - 1];
+  const totalDays = Math.max(CHART_MIN_SPAN, (lastTime - firstTime) / DAY_MS);
+
+  const clipId = `chart-clip-${(chartUid += 1)}`;
+  const summaryText = el("span", { class: "t" });
+  const hint = el("span", { class: "chart-hint", text: "Drag to pan · hold to read" });
+  const summary = el("div", { class: "chart-summary" }, [summaryText, hint]);
+  const svg = svgEl("svg", { class: "detail-chart", role: "img" });
+  const readout = el("div", { class: "chart-readout" });
+  const plot = el("div", {
+    class: "chart-plot",
+    tabindex: "0",
+    role: "group",
+    "aria-label": `${metric.label} history. Drag to pan, press and hold to read a value, arrow keys to step through readings.`,
+  }, [svg, readout]);
+  const thumb = el("div", { class: "chart-thumb" });
+  const track = el("div", { class: "chart-track" }, [thumb]);
+  const latest = el("button", {
+    class: "chart-latest", type: "button", text: "Latest",
+    onclick: () => { stopGlide(); state.chartOffsetDays = 0; draw(); },
+  });
+  const nav = el("div", { class: "chart-nav" }, [track, latest]);
+  const live = el("div", { class: "sr-only", "aria-live": "polite" });
+  const wrap = el("div", { class: "chart-wrap" }, [summary, plot, nav, live]);
+
+  let width = 0;
+
+  /** The span/offset pair the rest of the panel measures against, clamped to
+   *  what the history can actually show. */
+  function view() {
+    const span = state.chartSpanDays
+      ? clamp(state.chartSpanDays, CHART_MIN_SPAN, totalDays)
+      : totalDays;
+    const maxOffset = Math.max(0, totalDays - span);
+    state.chartOffsetDays = clamp(state.chartOffsetDays, 0, maxOffset);
+    const end = lastTime - state.chartOffsetDays * DAY_MS;
+    return { span, maxOffset, start: end - span * DAY_MS, end };
+  }
+
+  const plotWidth = () => {
+    const rect = plot.getBoundingClientRect().width || width || 340;
+    return Math.max(1, rect - CHART_INSET.left - CHART_INSET.right);
+  };
+
+  /** Where the drawn line sits at `time`, so the axis can fit what runs off
+   *  the edge of the window rather than only the readings inside it. */
+  function lineValueAt(time) {
+    if (time < firstTime || time > lastTime) return null;
+    const index = times.findIndex((t) => t >= time);
+    if (index <= 0) return valueOf(samples[Math.max(0, index)]);
+    const before = times[index - 1];
+    const after = times[index];
+    const ratio = after === before ? 0 : (time - before) / (after - before);
+    return valueOf(samples[index - 1]) + (valueOf(samples[index]) - valueOf(samples[index - 1])) * ratio;
+  }
+
+  function draw() {
+    const { span, maxOffset, start, end } = view();
+    const box = Math.round(plot.getBoundingClientRect().width) || width || 340;
+    width = box;
+    const left = CHART_INSET.left;
+    const right = Math.max(left + 60, box - CHART_INSET.right);
+    const top = CHART_INSET.top;
+    const bottom = CHART_HEIGHT - CHART_INSET.bottom;
+    const px = (time) => left + ((time - start) / (end - start)) * (right - left);
+
+    let from = times.findIndex((time) => time >= start);
+    if (from < 0) from = times.length;
+    let to = times.length - 1;
+    while (to >= 0 && times[to] > end) to -= 1;
+    const visible = samples.slice(from, to + 1);
+    // One reading either side keeps the line running off the edges instead of
+    // sprouting a fresh end every time the finger moves.
+    const drawn = samples.slice(Math.max(0, from - 1), Math.min(samples.length, to + 2));
+
+    const domain = visible.map(valueOf);
+    for (const edge of [start, end]) {
+      const value = lineValueAt(edge);
+      if (value !== null) domain.push(value);
+    }
+    if (!domain.length) domain.push(...samples.map(valueOf));
+    const scale = niceScale(Math.min(...domain), Math.max(...domain));
+    const py = (value) => bottom - ((value - scale.low) / (scale.high - scale.low)) * (bottom - top);
+
+    const children = [
+      svgEl("defs", {}, [
+        // Loose by a dot's width, so the readings on the window's own edges
+        // are drawn whole rather than sliced in half by the clip.
+        svgEl("clipPath", { id: clipId }, [
+          svgEl("rect", { x: left - 7, y: top - 7, width: right - left + 14, height: bottom - top + 14 }),
+        ]),
+      ]),
+    ];
+
+    for (const value of scale.ticks) {
+      const y = py(value);
+      children.push(
+        svgEl("line", { x1: left, y1: y, x2: right, y2: y, class: "chart-grid" }),
+        svgEl("text", { x: left - 8, y: y + 3.5, class: "chart-label", "text-anchor": "end" }, [
+          document.createTextNode(value.toFixed(scale.decimals)),
+        ])
+      );
+    }
+
+    const tickCount = right - left > 250 ? 4 : 3;
+    let previousLabel = null;
+    for (let i = 0; i <= tickCount; i += 1) {
+      const time = start + (i / tickCount) * (end - start);
+      const x = left + (i / tickCount) * (right - left);
+      const label = fmtAxisTick(time, span);
+      children.push(svgEl("line", { x1: x, y1: top, x2: x, y2: bottom, class: "chart-grid chart-grid--vertical" }));
+      if (label === previousLabel) continue;
+      previousLabel = label;
+      children.push(
+        svgEl("text", {
+          x, y: bottom + 17, class: "chart-label",
+          "text-anchor": i === 0 ? "start" : i === tickCount ? "end" : "middle",
+        }, [document.createTextNode(label)])
+      );
+    }
+
+    const body = svgEl("g", { "clip-path": `url(#${clipId})` });
+    if (drawn.length > 1) {
+      const coords = drawn.map((sample) => [px(fromIso(sample.date).getTime()), py(valueOf(sample))]);
+      const line = coords.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+      const area = `M${coords.map(([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`).join(" L")}`
+        + ` L${coords[coords.length - 1][0].toFixed(1)} ${bottom} L${coords[0][0].toFixed(1)} ${bottom} Z`;
+      body.append(
+        svgEl("path", { d: area, class: "chart-area" }),
+        svgEl("polyline", { points: line, class: "chart-line" })
+      );
+    }
+
+    if (state.chartPin && !visible.some((sample) => sample.date === state.chartPin)) state.chartPin = null;
+    // Dots only while they stay dots: past roughly one per 12px a long window
+    // turns into a dotted band, and the line alone reads better.
+    const dotted = visible.length <= (right - left) / 12;
+    visible.forEach((sample, index) => {
+      const isLast = sample === samples[samples.length - 1];
+      const isSelected = sample.date === state.chartPin;
+      if (!dotted && !isLast && !isSelected) return;
+      body.append(svgEl("circle", {
+        cx: px(fromIso(sample.date).getTime()).toFixed(1),
+        cy: py(valueOf(sample)).toFixed(1),
+        r: isSelected ? 5 : isLast ? 4 : 2.6,
+        class: `chart-point${isSelected ? " chart-point--active" : isLast ? " chart-point--last" : ""}`,
+      }));
+    });
+    children.push(body);
+
+    const chosen = state.chartPin ? visible.find((sample) => sample.date === state.chartPin) : null;
+    if (chosen) {
+      const x = px(fromIso(chosen.date).getTime());
+      children.splice(1, 0, svgEl("line", { x1: x, y1: top, x2: x, y2: bottom, class: "chart-cursor" }));
+    }
+
+    if (!visible.length) {
+      children.push(
+        svgEl("text", {
+          x: (left + right) / 2, y: (top + bottom) / 2,
+          class: "chart-label chart-label--note", "text-anchor": "middle",
+        }, [document.createTextNode("No readings in this window")])
+      );
+    }
+
+    svg.setAttribute("viewBox", `0 0 ${box} ${CHART_HEIGHT}`);
+    svg.setAttribute("width", box);
+    svg.setAttribute("height", CHART_HEIGHT);
+    svg.setAttribute(
+      "aria-label",
+      `${metric.label}: ${visible.length} reading${visible.length === 1 ? "" : "s"} from ${fmtWindowRange(start, end)}`
+    );
+    svg.replaceChildren(...children);
+
+    summaryText.textContent = visible.length
+      ? `${visible.length} reading${visible.length === 1 ? "" : "s"} · ${fmtWindowRange(start, end)}`
+      : `No readings · ${fmtWindowRange(start, end)}`;
+    hint.hidden = chartHintSeen || maxOffset <= 0;
+
+    nav.hidden = maxOffset <= 0;
+    const historyRange = Math.max(1, lastTime - firstTime);
+    thumb.style.left = `${clamp((start - firstTime) / historyRange, 0, 1) * 100}%`;
+    thumb.style.width = `${clamp((span * DAY_MS) / historyRange, 0.05, 1) * 100}%`;
+    latest.hidden = state.chartOffsetDays < 0.5;
+
+    drawReadout(chosen, chosen ? px(fromIso(chosen.date).getTime()) : 0, chosen ? py(valueOf(chosen)) : 0, box);
+  }
+
+  function drawReadout(sample, x, y, box) {
+    if (!sample) {
+      readout.classList.remove("on");
+      readout.replaceChildren();
+      return;
+    }
+    const index = samples.indexOf(sample);
+    const previous = index > 0 ? samples[index - 1] : null;
+    const clock = fmtClock(sample.at);
+    const change = previous ? valueOf(sample) - valueOf(previous) : null;
+    readout.replaceChildren(
+      el("span", { class: "d", text: `${fmtShort(sample.date)}${clock ? ` · ${clock}` : ""}` }),
+      el("span", { class: "v" }, [
+        el("b", { text: fmtValue(valueOf(sample)) }),
+        metric.unit ? el("i", { text: metric.unit }) : null,
+        change === null
+          ? null
+          : el("em", {
+              class: change <= 0 ? "down" : "",
+              text: `${change > 0 ? "+" : ""}${fmtValue(change)}`,
+            }),
       ])
     );
+    readout.classList.add("on");
+    const own = readout.offsetWidth || 120;
+    readout.style.left = `${clamp(x - own / 2, 4, Math.max(4, box - own - 4))}px`;
+    // Drop the card to the floor when the reading sits where the card would.
+    readout.style.top = y < CHART_INSET.top + 52
+      ? `${CHART_HEIGHT - CHART_INSET.bottom - 46}px`
+      : "0px";
+    live.textContent = `${fmtShort(sample.date)}: ${fmtValue(valueOf(sample))} ${metric.unit}`.trim();
   }
-  for (let i = 0; i <= 4; i += 1) {
-    const time = firstTime + (i / 4) * timeRange;
-    const x = left + (i / 4) * (right - left);
-    const iso = toIso(new Date(time));
-    children.push(
-      svgEl("line", { x1: x, y1: top, x2: x, y2: bottom, class: "chart-grid chart-grid--vertical" }),
-      svgEl("text", {
-        x, y: 255, class: "chart-label", "text-anchor": i === 0 ? "start" : i === 4 ? "end" : "middle",
-      }, [document.createTextNode(fmtChartDate(iso))])
-    );
+
+  // ── gestures
+
+  const pointers = new Map();
+  let gesture = null;
+  let pinch = null;
+  let holdTimer = 0;
+  let glideFrame = 0;
+
+  function stopGlide() {
+    if (glideFrame) cancelAnimationFrame(glideFrame);
+    glideFrame = 0;
   }
-  children.push(
-    svgEl("path", { d: area, class: "chart-area" }),
-    svgEl("polyline", { points, class: "chart-line" })
-  );
-  const pointStep = Math.max(1, Math.ceil(series.length / 60));
-  series.forEach((sample, index) => {
-    if (index % pointStep !== 0 && index !== series.length - 1) return;
-    const circle = svgEl("circle", {
-      cx: px(sample).toFixed(1),
-      cy: py(Number(sample[metric.key])).toFixed(1),
-      r: index === series.length - 1 ? 4 : 2.2,
-      class: index === series.length - 1 ? "chart-point chart-point--last" : "chart-point",
-    }, [
-      svgEl("title", {}, [
-        document.createTextNode(`${fmtChartDate(sample.date)} · ${Number(sample[metric.key]).toFixed(1)} ${metric.unit}`),
-      ]),
-    ]);
-    children.push(circle);
+
+  function clearSelection() {
+    if (!state.chartPin) return;
+    state.chartPin = null;
+    draw();
+  }
+
+  /** Move the window by a finger's worth of travel. Returns false at the ends
+   *  of the history, which is what stops a fling. */
+  function panBy(dx) {
+    const { span, maxOffset } = view();
+    if (maxOffset <= 0) return false;
+    const before = state.chartOffsetDays;
+    state.chartOffsetDays = clamp(before + (dx / plotWidth()) * span, 0, maxOffset);
+    draw();
+    return state.chartOffsetDays !== before;
+  }
+
+  function glide(velocity) {
+    if (Math.abs(velocity) < 0.05) return;
+    let speed = clamp(velocity, -4, 4); // px/ms — beyond this a flick is a jump cut
+    let previous = performance.now();
+    const step = (now) => {
+      // A re-render mid-fling swaps this chart out; the fling goes with it.
+      if (!plot.isConnected) { glideFrame = 0; return; }
+      const elapsed = Math.min(48, now - previous);
+      previous = now;
+      const moved = panBy(speed * elapsed);
+      speed *= 0.92 ** (elapsed / 16);
+      glideFrame = moved && Math.abs(speed) > 0.02 ? requestAnimationFrame(step) : 0;
+    };
+    glideFrame = requestAnimationFrame(step);
+  }
+
+  function timeAt(clientX) {
+    const rect = plot.getBoundingClientRect();
+    const { start, end } = view();
+    const ratio = (clientX - rect.left - CHART_INSET.left) / plotWidth();
+    return start + clamp(ratio, 0, 1) * (end - start);
+  }
+
+  function scrubTo(clientX) {
+    const { start, end } = view();
+    const time = timeAt(clientX);
+    let best = null;
+    let bestGap = Infinity;
+    samples.forEach((sample, index) => {
+      if (times[index] < start || times[index] > end) return;
+      const gap = Math.abs(times[index] - time);
+      if (gap < bestGap) { bestGap = gap; best = sample; }
+    });
+    if (!best) return;
+    chartHintSeen = true;
+    state.chartPin = best.date;
+    draw();
+  }
+
+  function beginPinch() {
+    clearTimeout(holdTimer);
+    gesture = null;
+    const [a, b] = [...pointers.values()];
+    const { span, start, end } = view();
+    const rect = plot.getBoundingClientRect();
+    const middle = (a.x + b.x) / 2 - rect.left - CHART_INSET.left;
+    const ratio = clamp(middle / plotWidth(), 0, 1);
+    pinch = {
+      distance: Math.max(1, Math.abs(a.x - b.x)),
+      span,
+      ratio,
+      anchor: start + ratio * (end - start),
+    };
+    // The browser's own pinch must not fight ours while two fingers are down.
+    plot.style.touchAction = "none";
+    clearSelection();
+  }
+
+  function updatePinch() {
+    const [a, b] = [...pointers.values()];
+    const distance = Math.max(1, Math.abs(a.x - b.x));
+    const span = clamp(pinch.span * (pinch.distance / distance), CHART_MIN_SPAN, totalDays);
+    const end = pinch.anchor + (1 - pinch.ratio) * span * DAY_MS;
+    state.chartSpanDays = span;
+    state.chartOffsetDays = clamp((lastTime - end) / DAY_MS, 0, Math.max(0, totalDays - span));
+    draw();
+  }
+
+  function endPinch() {
+    pinch = null;
+    plot.style.touchAction = "";
+    // A pinch all the way out is the All range, and should light that chip up.
+    if (state.chartSpanDays && state.chartSpanDays >= totalDays - 0.5) state.chartSpanDays = 0;
+    render();
+  }
+
+  plot.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    stopGlide();
+    pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    // Capture keeps a pan alive past the edge of the plot; a pointer the
+    // browser has already let go of is not worth failing the gesture over.
+    try { plot.setPointerCapture(event.pointerId); } catch { /* gone already */ }
+    if (pointers.size === 2) { beginPinch(); return; }
+    if (pointers.size > 2) return;
+    gesture = {
+      id: event.pointerId, mode: "idle", startX: event.clientX,
+      lastX: event.clientX, lastAt: event.timeStamp, velocity: 0,
+    };
+    clearTimeout(holdTimer);
+    holdTimer = setTimeout(() => {
+      if (gesture && gesture.mode === "idle") {
+        gesture.mode = "scrub";
+        scrubTo(gesture.startX);
+      }
+    }, SCRUB_HOLD_MS);
   });
 
-  return svgEl("svg", {
-    class: "detail-chart",
-    viewBox: "0 0 380 270",
-    role: "img",
-    "aria-label": `${metric.label} from ${fmtChartDate(series[0].date)} to ${fmtChartDate(series[series.length - 1].date)}`,
-  }, children);
+  plot.addEventListener("pointermove", (event) => {
+    const tracked = pointers.get(event.pointerId);
+    if (tracked) { tracked.x = event.clientX; tracked.y = event.clientY; }
+    if (pinch) { if (pointers.size >= 2) updatePinch(); return; }
+    // A mouse reads the line by hovering it; nothing needs to be held down.
+    if (!pointers.size) { if (event.pointerType === "mouse") scrubTo(event.clientX); return; }
+    if (!gesture || event.pointerId !== gesture.id) return;
+    if (gesture.mode === "idle") {
+      if (Math.abs(event.clientX - gesture.startX) < PAN_SLOP) return;
+      clearTimeout(holdTimer);
+      gesture.mode = "pan";
+      state.chartPin = null;
+    }
+    if (gesture.mode === "pan") {
+      const step = event.clientX - gesture.lastX;
+      const elapsed = Math.max(1, event.timeStamp - gesture.lastAt);
+      panBy(step);
+      gesture.velocity = 0.7 * (step / elapsed) + 0.3 * gesture.velocity;
+      gesture.lastX = event.clientX;
+      gesture.lastAt = event.timeStamp;
+    } else {
+      scrubTo(event.clientX);
+    }
+  });
+
+  const endPointer = (event) => {
+    pointers.delete(event.pointerId);
+    if (plot.hasPointerCapture(event.pointerId)) plot.releasePointerCapture(event.pointerId);
+    if (pinch) { if (pointers.size < 2) endPinch(); return; }
+    if (!gesture || event.pointerId !== gesture.id) return;
+    clearTimeout(holdTimer);
+    // A tap that never travelled is a request to read the nearest reading.
+    if (gesture.mode === "idle" && event.type === "pointerup") scrubTo(event.clientX);
+    if (gesture.mode === "pan") glide(gesture.velocity);
+    gesture = null;
+  };
+  plot.addEventListener("pointerup", endPointer);
+  plot.addEventListener("pointercancel", endPointer);
+  plot.addEventListener("pointerleave", (event) => {
+    if (event.pointerType === "mouse" && !pointers.size) clearSelection();
+  });
+
+  plot.addEventListener("keydown", (event) => {
+    const { span, maxOffset, start, end } = view();
+    if (event.key === "Escape") { clearSelection(); return; }
+    const direction = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0;
+    if (!direction) return;
+    event.preventDefault();
+    if (event.shiftKey || !state.chartPin) {
+      if (!state.chartPin && !event.shiftKey) {
+        const inWindow = samples.filter((_, i) => times[i] >= start && times[i] <= end);
+        if (inWindow.length) {
+          chartHintSeen = true;
+          state.chartPin = (direction > 0 ? inWindow[inWindow.length - 1] : inWindow[0]).date;
+          draw();
+          return;
+        }
+      }
+      stopGlide();
+      state.chartOffsetDays = clamp(state.chartOffsetDays - direction * span * 0.25, 0, maxOffset);
+      draw();
+      return;
+    }
+    const index = samples.findIndex((sample) => sample.date === state.chartPin);
+    const next = clamp(index + direction, 0, samples.length - 1);
+    state.chartPin = samples[next].date;
+    if (times[next] > end) state.chartOffsetDays = clamp((lastTime - times[next]) / DAY_MS, 0, maxOffset);
+    if (times[next] < start) {
+      state.chartOffsetDays = clamp((lastTime - times[next] - span * DAY_MS) / DAY_MS, 0, maxOffset);
+    }
+    draw();
+  });
+
+  new ResizeObserver(() => {
+    const box = Math.round(plot.getBoundingClientRect().width);
+    if (box && box !== width) draw();
+  }).observe(plot);
+  draw();
+
+  return wrap;
 }
 
 function stepsRing(steps, goal) {
@@ -1033,10 +1448,6 @@ function screenWeight() {
   const prev = series[series.length - 2];
   const weights = metricSeries("weight");
   const lastWeight = weights[weights.length - 1];
-  const window = chartWindow(series);
-  const shown = window.visible;
-  const shownFirst = shown[0];
-  const shownLast = shown[shown.length - 1];
 
   const children = [
     el("div", { class: "screen-head" }, [
@@ -1065,50 +1476,22 @@ function screenWeight() {
           ? el("span", { class: "tag tag-accent", text: delta(last[metric.key], prev[metric.key], metric.unit) })
           : null,
       ]),
-      el("div", { class: "chart-toolbar" }, [
-        el("div", { class: "chart-ranges", role: "group", "aria-label": "Chart time range" },
-          [
-            [180, "6M"], [365, "1Y"], [1095, "3Y"], [0, "All"],
-          ].map(([days, label]) =>
-            el("button", {
-              class: `chart-range${state.chartSpanDays === days ? " on" : ""}`,
-              type: "button",
-              text: label,
-              onclick: () => {
-                state.chartSpanDays = days;
-                state.chartOffsetDays = 0;
-                render();
-              },
-            })
-          )
-        ),
-        shownFirst && shownLast
-          ? el("span", {
-              class: "chart-summary",
-              text: `${shown.length} readings · ${fmtChartDate(shownFirst.date)} – ${fmtChartDate(shownLast.date)}`,
-            })
-          : null,
-      ]),
-      metricChart(shown, metric),
-      state.chartSpanDays && window.maxOffset > 0
-        ? el("div", { class: "chart-slider-wrap" }, [
-            el("span", { text: "Older" }),
-            el("input", {
-              class: "chart-slider",
-              type: "range",
-              min: "0",
-              max: String(window.maxOffset),
-              step: "1",
-              value: String(window.maxOffset - state.chartOffsetDays),
-              "aria-label": "Slide chart through history",
-              oninput: (event) => {
-                state.chartOffsetDays = window.maxOffset - Number(event.target.value);
-                render();
-              },
-            }),
-            el("span", { text: "Latest" }),
-          ])
-        : null,
+      el("div", { class: "chart-ranges", role: "group", "aria-label": "Chart time range" },
+        CHART_RANGES.map(([days, label]) =>
+          el("button", {
+            class: `chart-range${state.chartSpanDays === days ? " on" : ""}`,
+            type: "button",
+            text: label,
+            "aria-pressed": state.chartSpanDays === days ? "true" : "false",
+            onclick: () => {
+              state.chartSpanDays = days;
+              state.chartOffsetDays = 0;
+              render();
+            },
+          })
+        )
+      ),
+      metricChart(series, metric),
     ]),
   ];
 

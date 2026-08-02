@@ -120,10 +120,22 @@ Existing non-empty HA or Momentum values are preserved; Zepp adds missing
 dates and fills missing metrics on dates already present. Re-importing the
 same export is safe.
 
-The Body composition chart keeps the complete imported history. Choose 6M,
-1Y, 3Y or All above the graph. In a fixed-length view, drag the slider toward
-Older or Latest to move that window through the timeline. Every horizontal
-date label includes the year.
+The Body composition chart keeps the complete imported history but shows a
+window of it, one month wide to start with. The chart itself is the control:
+
+- **Drag it sideways** to move the window through the timeline, and flick it
+  to keep going. The bar underneath shows which slice of the history is on
+  screen, and **Latest** returns to today.
+- **Touch and hold**, or just tap, to read a reading off the line: its date,
+  time, value and the change from the reading before it. Tapping the next
+  point moves the card; it stays put otherwise.
+- **Pinch** to widen or narrow the window between three days and the whole
+  history. 1W, 1M, 3M, 1Y and All above the chart set it in one tap.
+
+A dragged window can land on a stretch with nothing in it, which the chart
+says outright; the line still crosses it, drawn between the readings either
+side. Date labels carry as much as the window needs — days in a short one, the
+year once it is longer than a year.
 
 ### Hevy
 

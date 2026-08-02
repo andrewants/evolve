@@ -1,5 +1,27 @@
 # Changelog
 
+## 2.7.0
+
+- Put the body composition chart under the finger. Dragging it sideways moves
+  the window through the history and a flick keeps it going, so the hairline
+  range slider — which asked for pixel-accurate aim on a phone and moved a
+  window whose contents you could not see while dragging — is gone. A bar
+  under the chart shows which slice of the history is on screen and a Latest
+  button returns to today.
+- Show the reading under the finger. Touching or holding the plot puts a card
+  above the line with that reading's date, time, value and change from the one
+  before it. The value used to live in an SVG `<title>` tooltip, which needs a
+  hovering mouse pointer: on a touch screen it could not be opened at all.
+- Add 1W, 1M and 3M ranges and start on 1M. Readings are daily, so the old
+  6M/1Y/3Y/All set had no view that did not compress months of them into a few
+  hundred pixels; a pinch now sets any span between three days and everything.
+- Scale the chart to the window it is showing rather than to whichever
+  readings happen to be in it. The old chart stretched the readings across the
+  full width whatever dates they carried, so a month with two entries drew the
+  same line as a month with thirty, and a single bad scale reading flattened
+  everything around it. Axis values sit on round numbers and the date labels
+  carry only what the span cannot imply.
+
 ## 2.6.1
 
 - Start the gym week on Sunday by default, matching Hevy's own default. The
