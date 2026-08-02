@@ -266,6 +266,13 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
 
 .muted-sm { font-size: 11px; color: var(--color-neutral-500); }
 
+/* A way in that should not compete with the heading it sits beside: quieter
+   than the label, still its own touch target. */
+.quiet-link {
+  font-size: 12px; color: var(--color-neutral-600); padding: 6px;
+}
+.quiet-link:active { color: var(--color-neutral-400); }
+
 /* ───────────────────────────────────────────────────────────────── login */
 
 .login {

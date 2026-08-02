@@ -1178,8 +1178,7 @@ function screenHome() {
     el("div", { class: "row-between", style: "align-items:baseline;margin:0 4px 8px" }, [
       el("span", { class: "section-label", text: "Days since" }),
       el("button", {
-        style: "color:var(--color-accent-300);font-size:12px;padding:6px",
-        type: "button", text: "Manage",
+        class: "quiet-link", type: "button", text: "Manage",
         onclick: () => { pushLayer(); state.sub = "counters"; render(); },
       }),
     ]),

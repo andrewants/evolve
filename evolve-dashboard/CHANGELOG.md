@@ -8,6 +8,9 @@
   one greets every visit until tomorrow instead of reshuffling mid-read;
   tapping it moves on to the next without waiting. Nothing is shipped in the
   bank — it stays empty, and Home shows nothing there, until you write one.
+- Quieten the Manage link beside Days since. Accent purple gave a secondary
+  way in more weight than the heading it sits next to; it is now grey, and
+  dimmer than that heading.
 - Show the affirmation being edited. Its dialog set the textarea's `value`
   attribute, which a textarea takes no starting content from, so editing one
   opened an empty box with no sign of what was about to be replaced.
