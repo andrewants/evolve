@@ -26,7 +26,6 @@ const TABS = [
   { key: "weight", label: "Weight", icon: "scales" },
   { key: "gym", label: "Gym", icon: "barbell" },
   { key: "affirm", label: "Affirm", icon: "sparkle" },
-  { key: "settings", label: "Settings", icon: "gear-six" },
 ];
 
 const state = {
@@ -1175,12 +1174,19 @@ function screenHome() {
         })
       : null,
 
-    el("div", { class: "row-between", style: "align-items:baseline;margin:0 4px 8px" }, [
+    el("div", { class: "row-between", style: "align-items:center;margin:0 4px 8px" }, [
       el("span", { class: "section-label", text: "Days since" }),
-      el("button", {
-        class: "quiet-link", type: "button", text: "Manage",
-        onclick: () => { pushLayer(); state.sub = "counters"; render(); },
-      }),
+      el("div", { style: "display:flex;align-items:center;gap:2px" }, [
+        el("button", {
+          class: "quiet-link", type: "button", text: "Manage",
+          onclick: () => { pushLayer(); state.sub = "manage"; render(); },
+        }),
+        el("button", {
+          class: "quiet-link quiet-link--icon", type: "button",
+          "aria-label": "Settings", title: "Settings",
+          onclick: () => { pushLayer(); state.sub = "settings"; render(); },
+        }, [icon("gear-six", { size: "16px" })]),
+      ]),
     ]),
   ];
 
@@ -1300,7 +1306,7 @@ function screenHome() {
               ])
             )
           )
-        : el("div", { class: "empty", text: "No habits yet — add some in Settings." }),
+        : el("div", { class: "empty", text: "No habits yet — add some under Manage." }),
     ])
   );
 
@@ -1344,27 +1350,59 @@ function toggleHabit(habit) {
 
 // ────────────────────────────────────────────────────────── counters (sub)
 
-function screenCounters() {
+/** Back arrow and title, for a screen pushed as a layer over the tabs. */
+function subScreenHead(title, action = null) {
+  return el("div", { style: "display:flex;align-items:center;gap:8px;margin:8px 0 16px" }, [
+    el("button", {
+      class: "btn btn-ghost btn-icon", type: "button", "aria-label": "Back",
+      style: "min-width:44px;min-height:44px",
+      onclick: () => { popLayer(); state.sub = null; render(); },
+    }, [icon("arrow-left", { size: "18px" })]),
+    el("span", { style: "font-family:var(--font-heading);font-size:19px;font-weight:500", text: title }),
+    action,
+  ]);
+}
+
+/** A section heading with an optional control on its right. */
+function manageSection(label, action = null, first = false) {
+  return el("div", {
+    class: "row-between",
+    style: `align-items:center;margin:${first ? 0 : 22}px 4px 8px`,
+  }, [
+    el("span", { class: "section-label", text: label }),
+    action,
+  ]);
+}
+
+/* Everything the dashboard shows but does not edit: the counters behind Days
+ * since, the habit list, and the bank of motivation phrases. They are one
+ * screen because they are one job — deciding what Home says. */
+function screenManage() {
   const d = data();
   return el("div", {}, [
-    el("div", { style: "display:flex;align-items:center;gap:8px;margin:8px 0 16px" }, [
-      el("button", {
-        class: "btn btn-ghost btn-icon", type: "button", "aria-label": "Back",
-        style: "min-width:44px;min-height:44px",
-        onclick: () => { popLayer(); state.sub = null; render(); },
-      }, [icon("arrow-left", { size: "18px" })]),
-      el("span", { style: "font-family:var(--font-heading);font-size:19px;font-weight:500", text: "Counters" }),
-      el("button", {
-        class: "btn btn-primary", type: "button", style: "margin-left:auto;min-height:40px",
-        onclick: () => openCounterModal(null),
-      }, [icon("plus", { size: "14px" }), document.createTextNode("Add")]),
-    ]),
+    subScreenHead("Manage"),
+
+    manageSection("Days since", el("button", {
+      class: "btn btn-secondary", type: "button", style: "min-height:34px;padding:6px 12px;font-size:12px",
+      onclick: () => openCounterModal(null),
+    }, [icon("plus", { size: "13px" }), document.createTextNode("Add")]), true),
     el("div", {
-      style: "font-size:12px;color:var(--color-neutral-400);margin:0 4px 12px",
+      style: "font-size:12px;color:var(--color-neutral-500);margin:0 4px 10px",
       text: "Toggle which counters appear on the dashboard (max 3).",
     }),
-    d.counters.length
-      ? el("div", { style: "display:flex;flex-direction:column;gap:10px" },
+    countersList(d),
+
+    manageSection("Habits"),
+    habitsEditor(d),
+
+    manageSection("Motivation"),
+    mottoEditor(d),
+  ]);
+}
+
+function countersList(d) {
+  return d.counters.length
+    ? el("div", { style: "display:flex;flex-direction:column;gap:10px" },
           d.counters.map((counter) =>
             el("div", { class: "card counter-row" }, [
               icon(counter.icon),
@@ -1390,8 +1428,95 @@ function screenCounters() {
               }, [icon("arrow-counter-clockwise", { size: "18px" })]),
             ])
           )
-        )
-      : el("div", { class: "card", style: "padding:16px" }, [el("div", { class: "empty", text: "No counters yet." })]),
+      )
+    : el("div", { class: "card", style: "padding:16px" }, [el("div", { class: "empty", text: "No counters yet." })]);
+}
+
+function habitsEditor(d) {
+  return el("div", { class: "card rows-card" }, [
+    ...d.habits.map((habit) =>
+      el("div", { class: "srow" }, [
+        el("div", { class: "grow" }, [el("div", { class: "t", text: habit.name })]),
+        el("button", {
+          class: "icon-btn", type: "button", "aria-label": `Delete ${habit.name}`,
+          onclick: () => guard(async () => {
+            await api(`/api/habits/${habit.id}`, { method: "DELETE" });
+            await refresh();
+          }),
+        }, [icon("trash-simple", { size: "16px" })]),
+      ])
+    ),
+    el("form", {
+      style: "display:flex;gap:8px;padding:10px 0",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const field = event.target.elements.name;
+        if (!field.value.trim()) return;
+        guard(async () => {
+          await api("/api/habits", { method: "POST", body: { name: field.value } });
+          field.value = "";
+          await refresh();
+        }, "Habit added");
+      },
+    }, [
+      el("input", { class: "input", name: "name", placeholder: "New habit", maxlength: "80", "aria-label": "New habit" }),
+      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:36px", text: "Add" }),
+    ]),
+  ]);
+}
+
+function mottoEditor(d) {
+  return el("div", { class: "card rows-card" }, [
+    el("div", { class: "muted-sm", style: "padding:4px 0 8px", text: "One of these greets you under the good morning, a different one each day." }),
+    ...d.mottos.map((motto) =>
+      el("div", { class: "srow" }, [
+        el("div", { class: "grow" }, [el("div", { class: "t motto-text", text: motto.text })]),
+        el("button", {
+          class: "icon-btn", type: "button", "aria-label": `Edit ${motto.text.slice(0, 24)}`,
+          onclick: () => {
+            pushLayer();
+            state.modal = "motto";
+            state.editId = motto.id;
+            state.form = { text: motto.text };
+            render();
+          },
+        }, [icon("pencil-simple", { size: "16px" })]),
+        el("button", {
+          class: "icon-btn", type: "button", "aria-label": `Delete ${motto.text.slice(0, 24)}`,
+          onclick: () => guard(async () => {
+            await api(`/api/mottos/${motto.id}`, { method: "DELETE" });
+            await refresh();
+          }),
+        }, [icon("trash-simple", { size: "16px" })]),
+      ])
+    ),
+    el("form", {
+      style: "display:flex;gap:8px;align-items:flex-end;padding:10px 0",
+      onsubmit: (event) => {
+        event.preventDefault();
+        const field = event.target.elements.text;
+        if (!field.value.trim()) return;
+        guard(async () => {
+          await api("/api/mottos", { method: "POST", body: { text: field.value } });
+          field.value = "";
+          field.style.height = "";
+          await refresh();
+        }, "Phrase added");
+      },
+    }, [
+      el("textarea", {
+        // One row at rest — a phrase is usually a line, and an empty box
+        // should not reserve the space the longest one would need. It grows
+        // to fit as it is typed into.
+        class: "input motto-input", name: "text", rows: "1", maxlength: "500",
+        placeholder: "New phrase", "aria-label": "New motivational phrase",
+        oninput: (event) => {
+          event.target.style.height = "auto";
+          event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
+        },
+      }),
+      el("button", { class: "btn btn-primary", type: "submit", style: "min-height:36px", text: "Add" }),
+    ]),
   ]);
 }
 
@@ -1788,7 +1913,7 @@ function screenSettings() {
   const section = (label) => el("div", { class: "section-label", style: "margin:0 4px 8px", text: label });
 
   return el("div", {}, [
-    el("div", { class: "h-title", style: "margin:8px 4px 16px", text: "Settings" }),
+    subScreenHead("Settings"),
 
     // ── goals
     section("Goals"),
@@ -2071,87 +2196,6 @@ function screenSettings() {
         class: "btn btn-primary", type: "submit", style: "min-height:44px",
         text: s.hevy_configured ? "Sync now" : "Save & sync",
       }),
-    ]),
-
-    // ── habits
-    section("Habits"),
-    el("div", { class: "card rows-card" }, [
-      ...d.habits.map((habit) =>
-        el("div", { class: "srow" }, [
-          el("div", { class: "grow" }, [el("div", { class: "t", text: habit.name })]),
-          el("button", {
-            class: "icon-btn", type: "button", "aria-label": `Delete ${habit.name}`,
-            onclick: () => guard(async () => {
-              await api(`/api/habits/${habit.id}`, { method: "DELETE" });
-              await refresh();
-            }),
-          }, [icon("trash-simple", { size: "16px" })]),
-        ])
-      ),
-      el("form", {
-        style: "display:flex;gap:8px;padding:10px 0",
-        onsubmit: (event) => {
-          event.preventDefault();
-          const field = event.target.elements.name;
-          if (!field.value.trim()) return;
-          guard(async () => {
-            await api("/api/habits", { method: "POST", body: { name: field.value } });
-            field.value = "";
-            await refresh();
-          }, "Habit added");
-        },
-      }, [
-        el("input", { class: "input", name: "name", placeholder: "New habit", maxlength: "80", "aria-label": "New habit" }),
-        el("button", { class: "btn btn-primary", type: "submit", style: "min-height:36px", text: "Add" }),
-      ]),
-    ]),
-
-    // ── motivation
-    section("Motivation"),
-    el("div", { class: "card rows-card" }, [
-      el("div", { class: "muted-sm", style: "padding:4px 0 8px", text: "One of these greets you under the good morning, a different one each day." }),
-      ...d.mottos.map((motto) =>
-        el("div", { class: "srow" }, [
-          el("div", { class: "grow" }, [el("div", { class: "t motto-text", text: motto.text })]),
-          el("button", {
-            class: "icon-btn", type: "button", "aria-label": `Edit ${motto.text.slice(0, 24)}`,
-            onclick: () => {
-              pushLayer();
-              state.modal = "motto";
-              state.editId = motto.id;
-              state.form = { text: motto.text };
-              render();
-            },
-          }, [icon("pencil-simple", { size: "16px" })]),
-          el("button", {
-            class: "icon-btn", type: "button", "aria-label": `Delete ${motto.text.slice(0, 24)}`,
-            onclick: () => guard(async () => {
-              await api(`/api/mottos/${motto.id}`, { method: "DELETE" });
-              await refresh();
-            }),
-          }, [icon("trash-simple", { size: "16px" })]),
-        ])
-      ),
-      el("form", {
-        style: "display:flex;gap:8px;align-items:flex-end;padding:10px 0",
-        onsubmit: (event) => {
-          event.preventDefault();
-          const field = event.target.elements.text;
-          if (!field.value.trim()) return;
-          guard(async () => {
-            await api("/api/mottos", { method: "POST", body: { text: field.value } });
-            field.value = "";
-            await refresh();
-          }, "Phrase added");
-        },
-      }, [
-        el("textarea", {
-          class: "input motto-input", name: "text", rows: "2", maxlength: "500",
-          placeholder: "You'll never know the value of a moment…",
-          "aria-label": "New motivational phrase",
-        }),
-        el("button", { class: "btn btn-primary", type: "submit", style: "min-height:36px", text: "Add" }),
-      ]),
     ]),
 
     // ── household
@@ -2488,13 +2532,13 @@ function tabBar() {
 }
 
 function currentScreen() {
-  if (state.sub === "counters") return screenCounters();
+  if (state.sub === "manage") return screenManage();
+  if (state.sub === "settings") return screenSettings();
   if (state.sub === "journal") return screenJournal();
   switch (state.tab) {
     case "weight": return screenWeight();
     case "gym": return screenGym();
     case "affirm": return screenAffirm();
-    case "settings": return screenSettings();
     default: return screenHome();
   }
 }

@@ -57,12 +57,16 @@ Add-on options (Configuration tab):
 | `session_days`      | `14`    | How long a PIN sign-in lasts                     |
 | `day_rollover_hour` | `4`     | Hour a new day starts, so 01:30 counts as "last night" |
 
-Everything else is configured in the app's **Settings** tab, because it is
-per-member.
+Everything else is configured inside the app, because it is per-member. Two
+places hold it, both reached from Home beside the Days since heading:
+
+- **Manage** — what the dashboard shows: counters, habits and the motivation
+  bank.
+- The **gear** next to it — Settings: goals, integrations, household and PIN.
 
 ### Motivation
 
-Settings → **Motivation**. Write the phrases you want to be greeted with, one
+Manage → **Motivation**. Write the phrases you want to be greeted with, one
 per entry; Momentum ships none of its own, so the bank is empty until you fill
 it. One of them then sits under the good morning on Home.
 

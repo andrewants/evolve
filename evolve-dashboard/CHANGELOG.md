@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.9.0
+
+- Gather what the dashboard shows behind one **Manage** screen. Counters were
+  already there; habits and the motivation bank have joined them from
+  Settings, which now holds only what it is for — goals, integrations,
+  household and the PIN.
+- Take Settings out of the tab bar. It is a place you visit rarely, and it was
+  spending a fifth of the bar to say so; it is now a gear beside Manage on
+  Home, and the four remaining tabs are the ones actually used daily. Both
+  screens push a history layer, so the phone's back gesture leaves them.
+- Sit the new-phrase box on one row. Its placeholder was a full example
+  sentence, which wrapped and left an empty box two rows tall; it now reads
+  "New phrase" and the box grows as a longer phrase is typed into it.
+
 ## 2.8.0
 
 - Greet the day with a phrase. Settings → **Motivation** keeps a bank of
