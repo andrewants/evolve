@@ -25,6 +25,7 @@ SCHEMA_VERSION = 3
 
 PIN_ITERATIONS = 200_000
 MAX_JOURNAL_ENTRIES = 1000
+MAX_THOUGHTS = 1000
 
 # Body-composition metrics the Mi scale exposes, in the order the Weight
 # screen shows them. `key` doubles as the sample field and the chip id.
@@ -110,6 +111,7 @@ def new_user(name: str, pin: str | None = None) -> dict[str, Any]:
         "habits": [],
         "checkins": {},
         "journal": [],
+        "thoughts": [],
         "weight_samples": [],
         "workouts": [],
         "gym_synced_at": None,
@@ -170,6 +172,7 @@ class Store:
             user.setdefault("habits", [])
             user.setdefault("checkins", {})
             user.setdefault("journal", [])
+            user.setdefault("thoughts", [])
             user.setdefault("weight_samples", [])
             user.setdefault("workouts", [])
             user.setdefault("gym_synced_at", None)
@@ -490,6 +493,32 @@ class Store:
 
     def delete_journal(self, user_id: str, entry_id: str) -> bool:
         return self._delete_from(user_id, "journal", entry_id)
+
+    # -- thoughts -------------------------------------------------------
+
+    def add_thought(self, user_id: str, text: str) -> dict[str, Any] | None:
+        """Catch one passing thought.
+
+        Kept apart from the journal on purpose: a journal entry is written for
+        a day, while these arrive whenever they arrive and are read back as a
+        stream. Only the moment is recorded, never a day, so nothing here has
+        to be filed under one.
+        """
+        with self._lock:
+            user = self._user_ref(user_id)
+            if user is None:
+                return None
+            text = (text or "").strip()[:8000]
+            if not text:
+                raise ValueError("thought is empty")
+            thought = {"id": new_id(), "text": text, "created": now_iso()}
+            user["thoughts"].insert(0, thought)
+            del user["thoughts"][MAX_THOUGHTS:]
+            self._commit()
+            return dict(thought)
+
+    def delete_thought(self, user_id: str, thought_id: str) -> bool:
+        return self._delete_from(user_id, "thoughts", thought_id)
 
     # -- synced data ----------------------------------------------------
 

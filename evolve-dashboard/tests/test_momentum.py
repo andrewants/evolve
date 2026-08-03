@@ -150,6 +150,39 @@ class StoreTests(unittest.TestCase):
     def test_new_member_starts_with_an_empty_motto_bank(self) -> None:
         self.assertEqual(self.store.user(self.uid)["mottos"], [])
 
+    def test_thoughts_are_newest_first(self) -> None:
+        for text in ("First", "Second", "Third"):
+            self.store.add_thought(self.uid, text)
+        stream = self.store.user(self.uid)["thoughts"]
+        self.assertEqual([t["text"] for t in stream], ["Third", "Second", "First"])
+
+    def test_thought_records_the_moment_not_a_day(self) -> None:
+        thought = self.store.add_thought(self.uid, "  Ideas arrive sideways  ")
+        self.assertEqual(thought["text"], "Ideas arrive sideways")
+        self.assertIn("created", thought)
+        self.assertNotIn("date", thought, "a thought is not filed under a day")
+
+    def test_blank_thought_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            self.store.add_thought(self.uid, "\n  \n")
+        self.assertEqual(self.store.user(self.uid)["thoughts"], [])
+
+    def test_thoughts_and_journal_stay_separate(self) -> None:
+        self.store.add_thought(self.uid, "A thought")
+        self.store.add_journal(self.uid, "An entry")
+        user = self.store.user(self.uid)
+        self.assertEqual([t["text"] for t in user["thoughts"]], ["A thought"])
+        self.assertEqual([e["text"] for e in user["journal"]], ["An entry"])
+
+    def test_thought_stream_is_capped(self) -> None:
+        from storage import MAX_THOUGHTS
+
+        for index in range(MAX_THOUGHTS + 5):
+            self.store.add_thought(self.uid, f"thought {index}")
+        stream = self.store.user(self.uid)["thoughts"]
+        self.assertEqual(len(stream), MAX_THOUGHTS)
+        self.assertEqual(stream[0]["text"], f"thought {MAX_THOUGHTS + 4}", "newest kept")
+
     def test_habit_toggle_is_idempotent_per_day(self) -> None:
         habit = self.store.save_habit(self.uid, "Morning yoga", None)
         today = date.today().isoformat()
@@ -1174,6 +1207,22 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(self.call(f"/api/mottos/{motto_id}", "DELETE")[0], 200)
         self.assertEqual(self.call(f"/api/mottos/{motto_id}", "DELETE")[0], 404)
+
+    def test_thought_round_trip(self) -> None:
+        self.sign_in()
+        status, created = self.call("/api/thoughts", "POST", {"text": "Catch this before it goes"})
+        self.assertEqual(status, 201)
+        thought_id = created["thought"]["id"]
+
+        _, boot = self.call("/api/bootstrap")
+        self.assertEqual(boot["thoughts"][0]["id"], thought_id, "newest is first to read")
+
+        self.assertEqual(self.call(f"/api/thoughts/{thought_id}", "DELETE")[0], 200)
+        self.assertEqual(self.call(f"/api/thoughts/{thought_id}", "DELETE")[0], 404)
+
+    def test_blank_thought_is_rejected_by_the_api(self) -> None:
+        self.sign_in()
+        self.assertEqual(self.call("/api/thoughts", "POST", {"text": "   "})[0], 400)
 
     def test_blank_motto_is_rejected_by_the_api(self) -> None:
         self.sign_in()

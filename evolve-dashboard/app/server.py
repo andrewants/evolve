@@ -46,7 +46,7 @@ MAX_IMPORT_BYTES = 128 * 1024 * 1024
 # is dropped rather than reading an unbounded upload.
 MAX_DRAIN_BYTES = 8 * 1024 * 1024
 SESSION_COOKIE = "momentum_session"
-APP_VERSION = "2.10.0"
+APP_VERSION = "2.11.0"
 
 BASHIO_TO_PYTHON_LEVEL = {
     "trace": logging.DEBUG,
@@ -213,6 +213,9 @@ class Api:
             Route("POST", r"/api/journal", self.create_journal),
             Route("DELETE", r"/api/journal/([\w-]+)", self.delete_journal),
 
+            Route("POST", r"/api/thoughts", self.create_thought),
+            Route("DELETE", r"/api/thoughts/([\w-]+)", self.delete_thought),
+
             Route("PUT", r"/api/settings", self.update_settings),
             Route("PUT", r"/api/telegram", self.update_telegram),
             Route("POST", r"/api/telegram/test", self.telegram_test),
@@ -349,6 +352,7 @@ class Api:
                 for habit in user["habits"]
             ],
             "journal": user["journal"][:60],
+            "thoughts": user["thoughts"][:120],
             "weight_samples": samples,
             "workouts": user["workouts"],
             "gym": gym_summary(
@@ -462,6 +466,14 @@ class Api:
 
     def delete_journal(self, _body: dict, ctx, entry_id: str) -> tuple[int, Any]:
         return _deleted(self.store.delete_journal(ctx.user_id, entry_id))
+
+    # -- thoughts -------------------------------------------------------
+
+    def create_thought(self, body: dict, ctx) -> tuple[int, Any]:
+        return _created(self.store.add_thought(ctx.user_id, body.get("text", "")), "thought")
+
+    def delete_thought(self, _body: dict, ctx, thought_id: str) -> tuple[int, Any]:
+        return _deleted(self.store.delete_thought(ctx.user_id, thought_id))
 
     # -- settings -------------------------------------------------------
 

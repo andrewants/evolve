@@ -198,6 +198,23 @@ function fmtUpdated(sample, today) {
   return `Updated ${fmtShort(sample.date)}`;
 }
 
+/** Grows a one-row textarea to fit what is typed into it, up to a ceiling. */
+function autoGrow(event) {
+  event.target.style.height = "auto";
+  event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
+}
+
+/** How long ago, while that still means something; the date and clock after. */
+function fmtAgo(at) {
+  const stamp = new Date(at);
+  if (Number.isNaN(stamp.getTime())) return "";
+  const minutes = Math.floor((Date.now() - stamp.getTime()) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h ago`;
+  return fmtDateTime(at);
+}
+
 /** "3" rather than "3.0", but "2.4" kept as it is. */
 const fmtAverage = (value) => (Number.isInteger(value) ? String(value) : value.toFixed(1));
 
@@ -1313,6 +1330,23 @@ function screenHome() {
     ])
   );
 
+  // Thoughts — a field to catch one in passing, and the way back to them
+  children.push(
+    el("div", { class: "card thoughts-card" }, [
+      el("div", { class: "row-between" }, [
+        el("span", { class: "section-label", text: "Thoughts" }),
+        d.thoughts.length
+          ? el("button", {
+              class: "quiet-link", type: "button",
+              text: `Read ${d.thoughts.length}`,
+              onclick: () => { pushLayer(); state.sub = "thoughts"; render(); },
+            })
+          : null,
+      ]),
+      thoughtComposer(),
+    ])
+  );
+
   // Journal preview
   const lastEntry = d.journal[0];
   children.push(
@@ -1528,10 +1562,7 @@ function mottoEditor(d) {
         // to fit as it is typed into; the row's min-height is the floor.
         class: "input", name: "text", rows: "1", maxlength: "500",
         placeholder: "New phrase", "aria-label": "New motivational phrase",
-        oninput: (event) => {
-          event.target.style.height = "auto";
-          event.target.style.height = `${Math.min(event.target.scrollHeight, 160)}px`;
-        },
+        oninput: autoGrow,
       }),
       el("button", { class: "btn btn-primary", type: "submit", text: "Add" }),
     ]),
@@ -1608,6 +1639,66 @@ function screenJournal() {
           )
         )
       : el("div", { class: "empty", text: "Nothing written down yet." }),
+  ]);
+}
+
+// ──────────────────────────────────────────────────────────────── thoughts
+
+/* Thoughts are not journal entries. A journal entry is written *for* a day and
+ * read back by date; a thought arrives whenever it arrives, wants catching in
+ * one motion, and is read back as a stream. Same shape, different job — so
+ * they are kept apart rather than turning the journal into an inbox.
+ */
+
+function thoughtComposer(placeholder = "Something on your mind?") {
+  return el("form", {
+    class: "add-row",
+    onsubmit: (event) => {
+      event.preventDefault();
+      const field = event.target.elements.text;
+      if (!field.value.trim()) return;
+      guard(async () => {
+        await api("/api/thoughts", { method: "POST", body: { text: field.value } });
+        field.value = "";
+        field.style.height = "";
+        await refresh();
+      }, "Saved to read later");
+    },
+  }, [
+    el("textarea", {
+      class: "input", name: "text", rows: "1", maxlength: "8000",
+      placeholder, "aria-label": "A passing thought", oninput: autoGrow,
+    }),
+    el("button", { class: "btn btn-primary", type: "submit", text: "Send" }),
+  ]);
+}
+
+function screenThoughts() {
+  const d = data();
+  return el("div", {}, [
+    subScreenHead("Thoughts"),
+    el("div", { class: "card", style: "padding:4px 14px;margin-bottom:14px" }, [
+      thoughtComposer(),
+    ]),
+    d.thoughts.length
+      ? el("div", { style: "display:flex;flex-direction:column;gap:10px" },
+          d.thoughts.map((thought) =>
+            el("div", { class: "card thought-card" }, [
+              el("div", { class: "row-between" }, [
+                el("span", { class: "muted-sm", text: fmtAgo(thought.created) }),
+                el("button", {
+                  class: "icon-btn", type: "button", "aria-label": "Delete thought",
+                  onclick: () => guard(async () => {
+                    await api(`/api/thoughts/${thought.id}`, { method: "DELETE" });
+                    await refresh();
+                  }),
+                }, [icon("trash-simple", { size: "15px" })]),
+              ]),
+              el("div", { class: "text", text: thought.text }),
+            ])
+          )
+        )
+      : el("div", { class: "empty", text: "Nothing caught yet — send one above." }),
   ]);
 }
 
@@ -2553,6 +2644,7 @@ function currentScreen() {
   if (state.sub === "manage") return screenManage();
   if (state.sub === "settings") return screenSettings();
   if (state.sub === "journal") return screenJournal();
+  if (state.sub === "thoughts") return screenThoughts();
   switch (state.tab) {
     case "weight": return screenWeight();
     case "gym": return screenGym();

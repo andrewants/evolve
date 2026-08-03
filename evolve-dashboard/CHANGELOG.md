@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.11.0
+
+- Catch passing thoughts. A **Thoughts** card on Home is a field and a Send
+  button — type what just crossed your mind and it is kept, without picking a
+  day or opening a screen first. **Read _n_** beside it opens the stream,
+  newest first, each thought stamped with how long ago it arrived.
+- Keep them out of the Journal. A journal entry is written for a day and read
+  back by date; a thought arrives whenever it arrives and is read back as a
+  stream, so a thought records only its moment and never a day. Both are kept
+  separately and neither appears in the other.
+
 ## 2.10.0
 
 - Give the Gym streak card sessions a week on average, under the bars. A

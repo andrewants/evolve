@@ -403,6 +403,15 @@ textarea.input { resize: none; font-family: var(--font-body); line-height: 1.5; 
   color: var(--color-text); line-height: 1.45; margin-top: 8px;
 }
 
+/* Catching a thought is one motion, so the field is the card — no preview of
+   the last one, nothing to read past on the way to typing. */
+.thoughts-card { padding: 14px 16px 6px; margin-bottom: 14px; }
+.thought-card { padding: 12px 16px 14px; }
+.thought-card .text {
+  font-size: 14px; color: var(--color-neutral-200); line-height: 1.5;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+
 .habits-card { padding: 16px; margin-bottom: 14px; }
 .habit-row {
   display: flex; align-items: center; gap: 12px;

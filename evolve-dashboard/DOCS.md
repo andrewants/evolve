@@ -1,8 +1,8 @@
 # Momentum
 
 A self-improvement dashboard for the whole household: days-since counters,
-Mi scale body composition, Hevy gym sync, affirmations, habits and a
-journal — with reminders over Telegram.
+Mi scale body composition, Hevy gym sync, affirmations, habits, a journal and
+a place to catch passing thoughts — with reminders over Telegram.
 
 ## Installation
 
@@ -72,6 +72,19 @@ The bank turns over a phrase a day, in the order they were written, so the
 same one greets every visit until tomorrow rather than reshuffling while you
 read it. Tapping the phrase moves to the next one without waiting for the day
 to. With the bank empty, Home simply shows nothing there.
+
+### Thoughts
+
+The **Thoughts** card on Home is a field and a Send button: type whatever just
+crossed your mind and it is caught, without choosing a day or opening
+anything. **Read _n_** beside the heading opens the stream, newest first, each
+one stamped with how long ago it arrived — minutes and hours while that still
+means something, then the date and clock. Delete one with the bin icon. The
+stream keeps the last 1000.
+
+This is deliberately not the Journal. A journal entry is written for a day and
+read back by date; a thought arrives whenever it arrives and is read back as a
+stream. Both are kept, separately, and neither shows up in the other.
 
 ### Days-since counter icons
 
@@ -258,6 +271,8 @@ All routes need the session cookie except `/api/session`, `/api/setup` and
 | `DELETE` | `/api/mottos/{id}`               | Remove one                    |
 | `POST`   | `/api/habits/{id}/toggle`        | Tick a habit for a day        |
 | `POST`   | `/api/journal`                   | Add an entry                  |
+| `POST`   | `/api/thoughts`                  | Catch a passing thought       |
+| `DELETE` | `/api/thoughts/{id}`             | Remove one                    |
 | `PUT`    | `/api/settings`                  | Goals, reminder, entities     |
 | `POST`   | `/api/telegram/test`             | Send a test message           |
 | `POST`   | `/api/telegram/backup`           | Send `/data` ZIP via Telegram |
